@@ -1,0 +1,14 @@
+port: 8001
+
+polling_interval: 15
+
+sentinel_peers:
+  - host: "localhost"
+    port: 8000
+  
+  - host: "localhost"
+    port: 8002
+
+app_instances:
+  - host: "localhost"
+    port: 9000
