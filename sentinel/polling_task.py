@@ -1,5 +1,9 @@
 import asyncio
 from fastapi import FastAPI
+import logging
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 async def poll_task(app: FastAPI):
     """Background task that polls instances"""
@@ -10,10 +14,9 @@ async def poll_task(app: FastAPI):
     interval = config.polling_interval
     
     while True:
-        print(f"Polling {len(cluster.get_instances_list())} instances...")
         
         for instance in cluster.get_instances_list():
-            print(f"Checking {instance.host}:{instance.port}")
+            pass
             
         await asyncio.sleep(interval)
 

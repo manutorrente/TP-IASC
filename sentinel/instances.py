@@ -34,6 +34,7 @@ class Cluster:
         return None
     
     def add_instance(self, host: str, port: int) -> None:
+        logger.info(f"Adding instance {host}:{port} to cluster")
         instance = AppInstance(host, port)
         self.instances.append(instance)
         
@@ -46,6 +47,9 @@ class Cluster:
 
     def get_instances_list(self) -> list[App]:
         return [App(host=instance.host, port=instance.port) for instance in self.instances]
+    
+    def get_instances(self) -> list['AppInstance']:
+        return self.instances
 
 
 class AppInstance:
@@ -72,6 +76,23 @@ class AppInstance:
             logger.warning(f"Instance {self.host}:{self.port} is down. Recent states: {recent_states}")
         return state
 
+class SentinelCluster:
+    
+    def __init__(self) -> None:
+        self.peers: list[SentinelPeer] = []
+        
+    def add_peer(self, host: str, port: int) -> None:
+        peer = SentinelPeer(host, port)
+        if not any(p.host == host and p.port == port for p in self.peers):
+            logger.info(f"Adding sentinel peer {peer.host}:{peer.port}")
+            self.peers.append(peer)
+        
+    async def discover_all_peers(self, local_host: str, local_port: int, cluster: Cluster) -> list[App]:
+        discovered_apps = []
+        for peer in self.peers:
+            new_apps = await peer.discover_peer(local_host, local_port, cluster)
+            discovered_apps.extend(new_apps)
+        return discovered_apps
 
 class SentinelPeer:
     """

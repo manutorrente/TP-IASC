@@ -6,7 +6,7 @@ import sys
 import uvicorn
 import logging
 
-from .instances import Cluster, SentinelPeer, AppInstance
+from .instances import Cluster, SentinelCluster, AppInstance
 from .config_loader import load_config, AppConfig as Config
 from .polling_task import start_background_task
 
@@ -21,21 +21,16 @@ async def lifespan(app: FastAPI):
     
     app.state.config = config
     app.state.cluster = Cluster(instances=[])
-    app.state.peers = []
+    app.state.sentinel_cluster = SentinelCluster()
     
     for instance in config.app_instances:
         app.state.cluster.add_instance(instance.host, instance.port)
     
     for peer_sentinel in config.sentinel_peers:
-        peer = SentinelPeer(peer_sentinel.host, peer_sentinel.port)
-        app.state.peers.append(peer)
-        
-        new_instances = await peer.discover_peer(
-            local_host="localhost",
-            local_port=config.port,
-            cluster=app.state.cluster
-        )
-        app.state.cluster.add_instances(new_instances)
+        peer = app.state.sentinel_cluster.add_peer(peer_sentinel.host, peer_sentinel.port)
+
+    new_instances = await app.state.sentinel_cluster.discover_all_peers("localhost", config.port, app.state.cluster)
+    app.state.cluster.add_instances(new_instances)
 
     start_background_task(app)
     
@@ -51,9 +46,9 @@ def get_cluster(request: Request) -> Cluster:
     return request.app.state.cluster
 
 
-def get_peers(request: Request) -> list[SentinelPeer]:
+def get_sentinels(request: Request) -> SentinelCluster:
     """Provides access to the list of sentinel peers"""
-    return request.app.state.peers
+    return request.app.state.sentinel_cluster
 
 
 def get_config(request: Request) -> Config:
@@ -101,7 +96,7 @@ async def instance_down_notification(
 async def discover_peer(
     request: Request,
     cluster: Cluster = Depends(get_cluster),
-    peers: list[SentinelPeer] = Depends(get_peers),
+    sentinel_cluster: SentinelCluster = Depends(get_sentinels),
     config: Config = Depends(get_config)
 ):
     """
@@ -119,18 +114,9 @@ async def discover_peer(
             status_code=400
         )
     
-    if not any(p.host == host and p.port == port for p in peers):
-        peer = SentinelPeer(host, port)
-        peers.append(peer)
-        logger.info(f"New peer discovered: {host}:{port}")
+    sentinel_cluster.add_peer(host, port)
     
-    for instance in new_instances:
-        ihost = instance.get("host")
-        iport = instance.get("port")
-        if ihost and iport:
-            if not cluster.get_instance(ihost, iport):
-                cluster.add_instance(ihost, iport)
-                logger.info(f"Added new instance from peer: {ihost}:{iport}")
+    cluster.add_instances(new_instances)
     
     local_cluster_info = cluster.get_instances_list()
     
@@ -154,11 +140,11 @@ async def cluster_status(cluster: Cluster = Depends(get_cluster)):
 
 
 @app.get("/peers")
-async def list_peers(peers: list[SentinelPeer] = Depends(get_peers)):
+async def list_peers(sentinel_cluster: SentinelCluster = Depends(get_sentinels)):
     """List all known sentinel peers"""
     return {
-        "total_peers": len(peers),
-        "peers": [{"host": p.host, "port": p.port} for p in peers]
+        "total_peers": len(sentinel_cluster.peers),
+        "peers": [{"host": p.host, "port": p.port} for p in sentinel_cluster.peers]
     }
 
 
