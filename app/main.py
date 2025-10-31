@@ -1,7 +1,9 @@
-# app.py
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 import asyncio
+import sys
+
+port: int = int(sys.argv[1]) if len(sys.argv) > 1 else 9000
 
 app = FastAPI(title="App Satelites")
 
@@ -12,4 +14,4 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=port)

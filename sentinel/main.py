@@ -1,3 +1,4 @@
+from urllib import request
 from fastapi import FastAPI, Request, Depends
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
@@ -6,13 +7,34 @@ import sys
 import uvicorn
 import logging
 
-from .instances import Cluster, SentinelCluster, AppInstance
-from .config_loader import load_config, AppConfig as Config
-from .polling_task import start_background_task
+from instances import Cluster, AppInstance
+from remote_peers import RemoteSentinelPeer, RemotePeers
+from config_loader import load_config, AppConfig as Config
+from polling_task import start_background_task
+from utils import async_request
+from models import App, NewRemotePeer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
+async def discover_peer_outgoing(host: str, port: int, app: FastAPI) -> list[App]:
+    """Discover new instances from a peer sentinel"""
+    url = f"http://{host}:{port}/discover-peer"
+    payload = {
+        "host": app.state.config.host,
+        "port": app.state.config.port,
+        "local_instances": [app.model_dump() for app in app.state.cluster.get_instances_list()]
+    }
+    try:
+        response = await async_request("POST", url, json=payload)
+        new_instances_data = response.get("local_instances", [])
+        new_instances = [App(**data) for data in new_instances_data]
+        logger.info(f"Discovered {len(new_instances)} new instances from peer {host}:{port}")
+        return new_instances
+    except Exception as e:
+        logger.info(f"Error discovering peer {host}:{port} - {e}. Peer is possibly down")
+        return []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -21,16 +43,20 @@ async def lifespan(app: FastAPI):
     
     app.state.config = config
     app.state.cluster = Cluster(instances=[])
-    app.state.sentinel_cluster = SentinelCluster()
-    
+    app.state.remote_peers = RemotePeers()
+
     for instance in config.app_instances:
         app.state.cluster.add_instance(instance.host, instance.port)
     
     for peer_sentinel in config.sentinel_peers:
-        peer = app.state.sentinel_cluster.add_peer(peer_sentinel.host, peer_sentinel.port)
-
-    new_instances = await app.state.sentinel_cluster.discover_all_peers("localhost", config.port, app.state.cluster)
-    app.state.cluster.add_instances(new_instances)
+        peer = RemoteSentinelPeer(peer_sentinel.host, peer_sentinel.port)
+        try:
+            new_instances = await discover_peer_outgoing(peer.host, peer.port, app)
+            app.state.cluster.add_instances(new_instances)
+            
+        except Exception as e:
+            logger.error(f"Error discovering peer {peer.host}:{peer.port} - {e}. Peer is possibly down", exc_info=True)
+        app.state.remote_peers.add_peer(peer)
 
     start_background_task(app)
     
@@ -46,9 +72,9 @@ def get_cluster(request: Request) -> Cluster:
     return request.app.state.cluster
 
 
-def get_sentinels(request: Request) -> SentinelCluster:
+def get_peers(request: Request) -> RemotePeers:
     """Provides access to the list of sentinel peers"""
-    return request.app.state.sentinel_cluster
+    return request.app.state.remote_peers
 
 
 def get_config(request: Request) -> Config:
@@ -60,27 +86,26 @@ def get_config(request: Request) -> Config:
 
 @app.post("/instance-down")
 async def instance_down_notification(
-    request: Request,
-    cluster: Cluster = Depends(get_cluster)
+    payload: App,
+    cluster: Cluster = Depends(get_cluster),
+    remote_peers: RemotePeers = Depends(get_peers)
 ):
     """
     Receive notification that an instance is down from a peer sentinel.
     """
-    data = await request.json()
-    host = data.get("host")
-    port = data.get("port")
-    
+    host = payload.host
+    port = payload.port
+
     if not host or not port:
         return JSONResponse(
             content={"error": "Missing host or port"},
             status_code=400
         )
     
-    # Find the instance and mark it as down
     instance = cluster.get_instance(host, port)
     if instance:
-        instance.down_counter += 1
-        logger.info(f"Received notification: {host}:{port} is down (count: {instance.down_counter})")
+        await instance.add_remote_down(remote_peers)
+        logger.info(f"Received notification: {host}:{port} is down (count: {instance.down_count()})")
         return JSONResponse(
             content={"message": "Instance marked as down"},
             status_code=200
@@ -90,32 +115,64 @@ async def instance_down_notification(
         content={"error": "Instance not found"},
         status_code=404
     )
+    
+@app.post("/instance-up")
+async def instance_up_notification(
+    payload: App,
+    cluster: Cluster = Depends(get_cluster),
+    remote_peers: RemotePeers = Depends(get_peers)
+):
+    """
+    Receive notification that an instance is up from a peer sentinel.
+    """
+    host = payload.host
+    port = payload.port
+
+    if not host or not port:
+        return JSONResponse(
+            content={"error": "Missing host or port"},
+            status_code=400
+        )
+    
+    instance = cluster.get_instance(host, port)
+    if instance:
+        await instance.add_remote_up(remote_peers)
+        logger.info(f"Received notification: {host}:{port} is up (count: {instance.down_count()})")
+        return JSONResponse(
+            content={"message": "Instance marked as up"},
+            status_code=200
+        )
+    
+    return JSONResponse(
+        content={"error": "Instance not found"},
+        status_code=404
+    )
+    
 
 
 @app.post("/discover-peer")
 async def discover_peer(
-    request: Request,
+    payload: NewRemotePeer,
     cluster: Cluster = Depends(get_cluster),
-    sentinel_cluster: SentinelCluster = Depends(get_sentinels),
-    config: Config = Depends(get_config)
+    remote_peers: RemotePeers = Depends(get_peers),
 ):
     """
     Handle peer discovery requests.
     Exchange cluster information with the requesting peer.
     """
-    data = await request.json()
-    host = data.get("host")
-    port = data.get("port")
-    new_instances = data.get("instances", [])
-    
-    if not host or not port:
+
+    remote_peer = RemoteSentinelPeer(payload.host, payload.port)
+    new_instances = payload.local_instances
+    logger.info(f"{len(new_instances)} instances received from peer {remote_peer.host}:{remote_peer.port}")
+
+    if not remote_peer.host or not remote_peer.port:
         return JSONResponse(
             content={"error": "Invalid data: missing host or port"},
             status_code=400
         )
-    
-    sentinel_cluster.add_peer(host, port)
-    
+
+    remote_peers.add_peer(remote_peer)
+
     cluster.add_instances(new_instances)
     
     local_cluster_info = cluster.get_instances_list()
@@ -132,7 +189,8 @@ async def discover_peer(
 @app.get("/cluster-status")
 async def cluster_status(cluster: Cluster = Depends(get_cluster)):
     """Get the current status of all instances in the cluster"""
-    health_results = await cluster.check_health()
+    instances = cluster.get_instances()
+    health_results = {str(instance): instance.state() for instance in instances}
     return {
         "total_instances": len(cluster.instances),
         "health_status": health_results
@@ -140,11 +198,11 @@ async def cluster_status(cluster: Cluster = Depends(get_cluster)):
 
 
 @app.get("/peers")
-async def list_peers(sentinel_cluster: SentinelCluster = Depends(get_sentinels)):
+async def list_peers(sentinel_cluster: RemotePeers = Depends(get_peers)):
     """List all known sentinel peers"""
     return {
-        "total_peers": len(sentinel_cluster.peers),
-        "peers": [{"host": p.host, "port": p.port} for p in sentinel_cluster.peers]
+        "total_peers": len(sentinel_cluster.get_peers()),
+        "peers": [f"{peer.host}:{peer.port}" for peer in sentinel_cluster.get_peers()]
     }
 
 

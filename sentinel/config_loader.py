@@ -1,9 +1,10 @@
 import yaml
 from typing import List
 from pydantic import BaseModel
-from .models import App
+from models import App
 
 class AppConfig(BaseModel):
+    host: str
     port: int
     polling_interval: int
     sentinel_peers: List[App]
