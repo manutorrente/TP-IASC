@@ -7,5 +7,8 @@ class App(BaseModel):
 class NewRemotePeer(BaseModel):
     host: str
     port: int
-    local_instances: list[App] = []
+    local_instances: list[App]
     
+class FailoverInfo(BaseModel):
+    responsible_peer: App
+    failed_instance: App

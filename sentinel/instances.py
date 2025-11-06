@@ -7,7 +7,9 @@ import httpx
 
 from utils import async_request, AppMixin
 from models import App
-from remote_peers import RemotePeers
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from remote_peers import RemotePeers
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,7 @@ class Cluster:
 def check_down_after(func):
     """Decorator to check objective down state after method execution."""
     async def wrapper(self, remote_peers: "RemotePeers"):
+        logger.debug(f"Executing {func.__name__} for instance {self.host}:{self.port}")
         await func(self, remote_peers)
         await remote_peers.check_objectively_down(self)
     return wrapper
@@ -106,7 +109,7 @@ class AppInstance(AppMixin):
             self.remote_down_counter -= 1
             
     def down_count(self) -> int:
-        return not self.is_locally_up + self.remote_down_counter
+        return self.is_locally_up + self.remote_down_counter
     
     def state(self) -> dict:
         return {

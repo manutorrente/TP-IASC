@@ -12,7 +12,7 @@ from remote_peers import RemoteSentinelPeer, RemotePeers
 from config_loader import load_config, AppConfig as Config
 from polling_task import start_background_task
 from utils import async_request
-from models import App, NewRemotePeer
+from models import App, FailoverInfo, NewRemotePeer
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -43,7 +43,8 @@ async def lifespan(app: FastAPI):
     
     app.state.config = config
     app.state.cluster = Cluster(instances=[])
-    app.state.remote_peers = RemotePeers()
+    app.state.remote_peers = RemotePeers(self_peer=RemoteSentinelPeer(config.host, config.port))
+    app.state.failover_in_progress = False
 
     for instance in config.app_instances:
         app.state.cluster.add_instance(instance.host, instance.port)
@@ -211,6 +212,54 @@ async def health_check():
     await asyncio.sleep(0.1)
     return JSONResponse(
         content={"status": "ok", "message": "Service is healthy"}
+    )
+
+@app.post("/request-failover")
+async def request_failover(
+    payload: App,
+    remote_peers: RemotePeers = Depends(get_peers)
+):
+    """Endpoint to request failover from this sentinel's peers"""
+    await remote_peers.requested_failover(payload)
+    return JSONResponse(
+        content={"message": "Failover requested"},
+        status_code=200
+    )
+
+@app.post("/failover")
+async def initiate_failover(
+    payload: App,
+    request: Request,
+    remote_peers: RemotePeers = Depends(get_peers),
+):
+    if request.app.state.failover_in_progress:
+        return JSONResponse(
+            content={"message": "Failover already in progress"},
+            status_code=200
+        )
+    logger.info(f"Failover initiated for instance {payload.host}:{payload.port}")
+    request.app.state.failover_in_progress = True
+    
+    # Perform failover logic here
+    failover_info = FailoverInfo(
+        responsible_peer=App(host=request.app.state.config.host, port=request.app.state.config.port),
+        failed_instance=payload
+    )
+    
+    logger.info(f"Failover finished")
+    await remote_peers.notify_failover_complete(failover_info)
+
+@app.post("/failover-complete")
+async def failover_complete(
+    payload: FailoverInfo,
+    remote_peers: RemotePeers = Depends(get_peers),
+):
+    """Endpoint to handle failover completion notifications from peers"""
+    await remote_peers.update_after_failover(payload)
+    logger.info(f"Failover completed with info: {payload}")
+    return JSONResponse(
+        content={"message": "Failover completion acknowledged"},
+        status_code=200
     )
 
 
