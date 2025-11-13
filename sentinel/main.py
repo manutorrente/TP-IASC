@@ -12,7 +12,7 @@ from remote_peers import RemoteSentinelPeer, RemotePeers
 from config_loader import load_config, AppConfig as Config
 from polling_task import start_background_task
 from utils import async_request
-from models import App, FailoverInfo, NewRemotePeer
+from models import App, CoordinatorUpdate, FailoverInfo, NewRemotePeer, SentinelPeerModel
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -203,7 +203,9 @@ async def list_peers(sentinel_cluster: RemotePeers = Depends(get_peers)):
     """List all known sentinel peers"""
     return {
         "total_peers": len(sentinel_cluster.get_peers()),
-        "peers": [f"{peer.host}:{peer.port}" for peer in sentinel_cluster.get_peers()]
+        "peers": [f"{peer.host}:{peer.port}" for peer in sentinel_cluster.get_peers()],
+        "offline_peers": [f"{peer.host}:{peer.port}" for peer in sentinel_cluster.offline_peers],
+        "coordinator": f"{sentinel_cluster.objective_coordinator.host}:{sentinel_cluster.objective_coordinator.port}" if sentinel_cluster.objective_coordinator else None
     }
 
 
@@ -214,40 +216,6 @@ async def health_check():
         content={"status": "ok", "message": "Service is healthy"}
     )
 
-@app.post("/request-failover")
-async def request_failover(
-    payload: App,
-    remote_peers: RemotePeers = Depends(get_peers)
-):
-    """Endpoint to request failover from this sentinel's peers"""
-    await remote_peers.requested_failover(payload)
-    return JSONResponse(
-        content={"message": "Failover requested"},
-        status_code=200
-    )
-
-@app.post("/failover")
-async def initiate_failover(
-    payload: App,
-    request: Request,
-    remote_peers: RemotePeers = Depends(get_peers),
-):
-    if request.app.state.failover_in_progress:
-        return JSONResponse(
-            content={"message": "Failover already in progress"},
-            status_code=200
-        )
-    logger.info(f"Failover initiated for instance {payload.host}:{payload.port}")
-    request.app.state.failover_in_progress = True
-    
-    # Perform failover logic here
-    failover_info = FailoverInfo(
-        responsible_peer=App(host=request.app.state.config.host, port=request.app.state.config.port),
-        failed_instance=payload
-    )
-    
-    logger.info(f"Failover finished")
-    await remote_peers.notify_failover_complete(failover_info)
 
 @app.post("/failover-complete")
 async def failover_complete(
@@ -255,10 +223,51 @@ async def failover_complete(
     remote_peers: RemotePeers = Depends(get_peers),
 ):
     """Endpoint to handle failover completion notifications from peers"""
-    await remote_peers.update_after_failover(payload)
     logger.info(f"Failover completed with info: {payload}")
     return JSONResponse(
         content={"message": "Failover completion acknowledged"},
+        status_code=200
+    )
+
+@app.post("/failover-start")
+async def failover_start(
+    payload: FailoverInfo,
+    remote_peers: RemotePeers = Depends(get_peers),
+):
+    """Endpoint to handle failover start notifications from peers"""
+    logger.info(f"Failover started with info: {payload}")
+    return JSONResponse(
+        content={"message": "Failover start acknowledged"},
+        status_code=200
+    )
+
+
+@app.post("/coordinator-update")
+async def coordinator_update(
+    payload: CoordinatorUpdate,
+    remote_peers: RemotePeers = Depends(get_peers),
+):
+    """Endpoint to handle coordinator updates"""
+    coordinator_choice = payload.coordinator_pick.address
+    await remote_peers.incoming_coordinator_update(
+        remote_coordinator_pick=coordinator_choice,
+        origin=payload.origin.address
+    )
+    return JSONResponse(
+        content={"message": "Coordinator update processed"},
+        status_code=200
+    )
+    
+@app.post("/coordinator-change")
+async def coordinator_change(
+    payload: SentinelPeerModel,
+    remote_peers: RemotePeers = Depends(get_peers),
+):
+
+    remote_peers.change_coordinator(payload.address)
+
+    return JSONResponse(
+        content={"message": "Coordinator change acknowledged"},
         status_code=200
     )
 

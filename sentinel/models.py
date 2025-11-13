@@ -4,6 +4,16 @@ class App(BaseModel):
     host: str
     port: int
     
+    def __hash__(self) -> int:
+        return hash((self.host, self.port))
+    
+class SentinelPeerModel(BaseModel):
+    address: App
+    
+class CoordinatorUpdate(BaseModel):
+    coordinator_pick: SentinelPeerModel
+    origin: SentinelPeerModel
+    
 class NewRemotePeer(BaseModel):
     host: str
     port: int
