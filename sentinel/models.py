@@ -7,12 +7,12 @@ class App(BaseModel):
     def __hash__(self) -> int:
         return hash((self.host, self.port))
     
-class SentinelPeerModel(BaseModel):
+class APIAddressModel(BaseModel):
     address: App
     
 class CoordinatorUpdate(BaseModel):
-    coordinator_pick: SentinelPeerModel
-    origin: SentinelPeerModel
+    coordinator_pick: APIAddressModel
+    origin: APIAddressModel
     
 class NewRemotePeer(BaseModel):
     host: str

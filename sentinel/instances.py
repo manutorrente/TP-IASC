@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 class Cluster:
     def __init__(self, instances: list['AppInstance'] | None = None):
         self.instances = instances or []
+        self.master = None
 
 
     @lru_cache(maxsize=15)
@@ -27,11 +28,25 @@ class Cluster:
                 return instance
         return None
     
+    def set_master(self, host: str, port: int) -> None:
+        master_instance = self.get_instance(host, port)
+        if master_instance:
+            self.master = master_instance
+            logger.info(f"Set master instance to {host}:{port}")
+        else:
+            logger.warning(f"Instance {host}:{port} not found in cluster. Cannot set as master.")
+    
     def add_instance(self, host: str, port: int) -> None:
         instance = AppInstance(host, port)
         if not instance in self.instances:
             logger.info(f"Adding instance {host}:{port} to cluster")
             self.instances.append(instance)
+    
+    def choose_master_arbitrary(self) -> "AppInstance | None":
+        if not self.instances:
+            return None
+        self.master = self.instances[0]
+        return self.master
         
     def add_instances(self, instances: list[App]) -> None:
         for inst in instances:

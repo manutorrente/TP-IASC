@@ -1,0 +1,13 @@
+Notificaciones: a donde?
+
+los writes no escriben a todos los nodos
+
+algoritmo para que se recuperen los writes perdidos
+
+sharding
+
+load balancer
+
+failover
+
+implementar writes con funcion gather n

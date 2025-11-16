@@ -12,7 +12,7 @@ from remote_peers import RemoteSentinelPeer, RemotePeers
 from config_loader import load_config, AppConfig as Config
 from polling_task import start_background_task
 from utils import async_request
-from models import App, CoordinatorUpdate, FailoverInfo, NewRemotePeer, SentinelPeerModel
+from models import App, CoordinatorUpdate, FailoverInfo, NewRemotePeer, APIAddressModel
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -188,13 +188,19 @@ async def discover_peer(
 
 
 @app.get("/cluster-status")
-async def cluster_status(cluster: Cluster = Depends(get_cluster)):
+async def cluster_status(cluster: Cluster = Depends(get_cluster),
+                         remote_peers: RemotePeers = Depends(get_peers)):
     """Get the current status of all instances in the cluster"""
+    if cluster.master is None:
+        await remote_peers.elect_master(cluster)
+    
+    
     instances = cluster.get_instances()
     health_results = {str(instance): instance.state() for instance in instances}
     return {
         "total_instances": len(cluster.instances),
-        "health_status": health_results
+        "health_status": health_results,
+        "master": str(cluster.master) if cluster.master else None
     }
 
 
@@ -260,7 +266,7 @@ async def coordinator_update(
     
 @app.post("/coordinator-change")
 async def coordinator_change(
-    payload: SentinelPeerModel,
+    payload: APIAddressModel,
     remote_peers: RemotePeers = Depends(get_peers),
 ):
 
@@ -271,6 +277,39 @@ async def coordinator_change(
         status_code=200
     )
 
+
+@app.post("/elect-master")
+async def elect_master(
+    remote_peers: RemotePeers = Depends(get_peers),
+    cluster: Cluster = Depends(get_cluster)
+):
+    await remote_peers.elect_master(cluster)
+    return JSONResponse(
+        content={"message": "Master election initiated"},
+        status_code=200
+    )
+
+@app.post("/new-master")
+async def new_master(
+    payload: APIAddressModel,
+    cluster: Cluster = Depends(get_cluster)
+):
+    host = payload.address.host
+    port = int(payload.address.port)
+    master_instance = cluster.get_instance(host, port)
+    if master_instance:
+        cluster.master = master_instance
+        logger.info(f"New master instance set: {host}:{port}")
+        return JSONResponse(
+            content={"message": "New master instance set"},
+            status_code=200
+        )
+    else:
+        logger.warning(f"Instance {host}:{port} not found in cluster to set as master.")
+        return JSONResponse(
+            content={"error": "Instance not found in cluster"},
+            status_code=404
+        )
 
 if __name__ == "__main__":
     config_file = sys.argv[1] if len(sys.argv) > 1 else "sentinel/config.yaml"

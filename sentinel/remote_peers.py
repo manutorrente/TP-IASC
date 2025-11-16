@@ -3,7 +3,7 @@ import logging
 from models import App, FailoverInfo
 from utils import async_request, AppMixin, request_error_wrapper
 from typing import TYPE_CHECKING
-from instances import AppInstance
+from instances import AppInstance, Cluster
 import asyncio
 
 
@@ -19,8 +19,23 @@ class RemotePeers:
         self.objectively_down_instances: set["AppInstance"] = set()
         self.locally_down_instances: set["AppInstance"] = set()
         self.self_peer = self_peer
-        self.objective_coordinator = None
+        self.objective_coordinator: "RemoteSentinelPeer | None" = None
         self.votes_for_coordinator = set()
+        
+    async def elect_master(self, cluster: "Cluster") -> None:
+        if self.objective_coordinator == self.self_peer:
+            cluster.master = cluster.choose_master_arbitrary()
+            if cluster.master:
+                logger.info(f"Elected master instance: {cluster.master.host}:{cluster.master.port}")
+                await asyncio.gather(*(peer.notify_new_master(cluster.master) for peer in self.peers))
+            else:
+                logger.warning("No instances available to elect as master.")
+        elif self.objective_coordinator:
+            logger.info(f"Requesting master election from objective coordinator {self.objective_coordinator.host}:{self.objective_coordinator.port}")
+            await self.objective_coordinator.request_master_election()
+        else:
+            logger.error("No objective coordinator set; cannot request master election.")
+                    
 
     def add_peer(self, peer: "RemoteSentinelPeer"):
         if peer not in self.peers:
@@ -246,3 +261,19 @@ class RemoteSentinelPeer(AppMixin):
         url = f"{self.url}/failover-start"
         await async_request("POST", url, json=failover_info.model_dump())
         logger.info(f"Notified peer {self.url} that failover is starting")
+        
+    @request_error_wrapper
+    async def notify_new_master(self, new_master: "AppInstance") -> None:
+        """Notify this peer about the new master instance"""
+        url = f"{self.url}/new-master"
+        payload = {"address": {"host": new_master.host, "port": new_master.port}}
+        await async_request("POST", url, json=payload)
+        logger.info(f"Notified peer {self.url} that new master is {new_master.host}:{new_master.port}")
+        
+        
+    @request_error_wrapper
+    async def request_master_election(self) -> None:
+        """Request this peer to initiate a master election"""
+        url = f"{self.url}/elect-master"
+        await async_request("POST", url)
+        logger.info(f"Requested peer {self.url} to initiate master election")
