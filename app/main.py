@@ -5,6 +5,7 @@ from routers import operators, users, windows, reservations, cluster
 from services.notification_service import notification_service
 from services.window_service import window_service
 from services.reservation_service import reservation_service
+from services.node_recovery_service import node_recovery_service
 from storage import storage
 from cluster.cluster_manager import cluster_manager
 from cluster.modification_history import modification_history
@@ -35,6 +36,7 @@ async def lifespan(app: FastAPI):
         reservation_service.set_storage(storage)
         reservation_service.set_window_service(window_service)
         reservation_service.set_notification_service(notification_service)
+        node_recovery_service.set_storage(storage)
         logger.info("Services initialized successfully")
         
         logger.info("Initializing cluster manager...")
@@ -45,6 +47,7 @@ async def lifespan(app: FastAPI):
         notification_task = asyncio.create_task(notification_service.start())
         window_monitor_task = asyncio.create_task(window_service.monitor_windows())
         history_cleanup_task = asyncio.create_task(modification_history.start_cleanup_loop())
+        node_recovery_task = asyncio.create_task(node_recovery_service.start())
         logger.info("Background tasks started successfully")
         
         yield
@@ -53,11 +56,13 @@ async def lifespan(app: FastAPI):
         notification_task.cancel()
         window_monitor_task.cancel()
         history_cleanup_task.cancel()
+        node_recovery_task.cancel()
         
         try:
             await notification_task
             await window_monitor_task
             await history_cleanup_task
+            await node_recovery_task
         except asyncio.CancelledError:
             logger.info("Background tasks cancelled successfully")
         

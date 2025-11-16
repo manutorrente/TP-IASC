@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from typing import Any, Dict
+from typing import Any, Dict, List
+from datetime import datetime
 from dependencies import get_storage, get_cluster_manager
 from cluster.cluster_manager import ClusterManager
 from storage import Storage
@@ -23,6 +24,16 @@ class CommitRequest(BaseModel):
 class AbortRequest(BaseModel):
     entity_type: str
     entity_id: str
+
+class ModificationItem(BaseModel):
+    operation: str
+    entity_type: str
+    entity_id: str
+    data: Dict[str, Any]
+    timestamp: str
+
+class BatchCatchupRequest(BaseModel):
+    modifications: List[ModificationItem]
 
 @router.post("/prepare")
 async def prepare_write(request: PrepareRequest, storage: Storage = Depends(get_storage)):
@@ -70,6 +81,47 @@ async def abort_write(request: AbortRequest, storage: Storage = Depends(get_stor
         return {"status": "aborted"}
     except Exception as e:
         logger.error(f"Error aborting write: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/batch-catchup")
+async def batch_catchup(request: BatchCatchupRequest, storage: Storage = Depends(get_storage)):
+    """Receive batch of modifications to catch up this node."""
+    try:
+        logger.info(f"Received batch catchup request with {len(request.modifications)} modifications")
+        
+        applied_count = 0
+        failed_count = 0
+        
+        for mod in request.modifications:
+            try:
+                repository = storage.get_repository(mod.entity_type)
+                if not repository:
+                    logger.warning(f"Invalid entity type during catchup: {mod.entity_type}")
+                    failed_count += 1
+                    continue
+                
+                logger.debug(f"Applying catchup modification: {mod.entity_type}:{mod.entity_id} operation:{mod.operation}")
+                
+                await repository.prepare_write(mod.entity_id, mod.data)
+                await repository.commit_write(mod.entity_id)
+                
+                applied_count += 1
+                
+            except Exception as e:
+                logger.error(f"Error applying modification {mod.entity_type}:{mod.entity_id}: {e}", exc_info=True)
+                failed_count += 1
+        
+        logger.info(f"Batch catchup completed - Applied: {applied_count}, Failed: {failed_count}")
+        
+        return {
+            "status": "completed",
+            "applied": applied_count,
+            "failed": failed_count,
+            "total": len(request.modifications)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing batch catchup: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     
 @router.get("/status")

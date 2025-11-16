@@ -50,11 +50,11 @@ class ModificationHistory:
             logger.debug(f"Retrieved record: {key} - Found: {record is not None}")
             return record
     
-    async def get_recent_modifications(self, since: datetime) -> list[ModificationRecord]:
+    async def get_recent_modifications(self, since: datetime | None) -> list[ModificationRecord]:
         async with self._lock:
             recent = [
                 record for record in self._history.values()
-                if record.timestamp >= since
+                if since is None or record.timestamp >= since
             ]
             logger.debug(f"Retrieved {len(recent)} modifications since {since}")
             return recent

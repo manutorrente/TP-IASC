@@ -1,13 +1,16 @@
 Notificaciones: a donde?
 
-los writes no escriben a todos los nodos
+los writes no escriben a todos los nodos -> listo
 
-algoritmo para que se recuperen los writes perdidos
+algoritmo para que se recuperen los writes perdidos -> sistema de catch 
+up listo, podria manejar mejor muchos datos
 
 sharding
+
+que los sentinel contesten quien es el master
 
 load balancer
 
 failover
 
-implementar writes con funcion gather n
+implementar writes con funcion gather n -> a revisar
