@@ -97,7 +97,21 @@ class Cluster:
 
         # Check if we need to handle node changes
         self._handle_node_changes(replication_factor)
+        self._notify_shard_changes()
         self._log_final_state()
+
+    def _notify_shard_changes(self) -> None:
+        
+        state = {
+            str(instance): {
+                "master_shards": [s.shard_id for s in instance.get_master_shards()],
+                "replica_shards": [s.shard_id for s in instance.get_replica_shards()],
+            }
+            for instance in self.instances
+        }
+        
+        for instance in self.instances:
+            instance.notify_shard_change(state)
 
     def _initial_shard_assignment(self, replication_factor: int) -> None:
         """Initial shard assignment when cluster is first created"""
@@ -417,6 +431,15 @@ class AppInstance(AppMixin):
             )
         else:
             logger.debug(f"Instance {self.host}:{self.port} is healthy.")
+            
+    def notify_shard_change(self, state: dict) -> None:
+        endpoint = f"{self.url}/cluster/shard-update"
+        payload = {"shard_state": state}
+        try:
+            httpx.post(endpoint, json=payload, timeout=5.0)
+            logger.info(f"Notified instance {self.host}:{self.port} of shard changes")
+        except httpx.HTTPError as e:
+            logger.error(f"Failed to notify instance {self.host}:{self.port} of shard changes: {e}")
 
     @check_down_after
     async def add_remote_down(self, peer_service: "PeerService"):

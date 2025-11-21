@@ -60,20 +60,21 @@ class NodeRecoveryService:
         
         while self._running:
             try:
-                # Only run health checks on master node
-                if not cluster_manager.is_master:
-                    logger.debug("Not master node, skipping health check")
+                # Check if this node has any master shards
+                if not self._has_master_shards():
+                    logger.debug("No master shards on this node, skipping health check")
                     await asyncio.sleep(self.check_interval)
                     continue
                 
-                blocked_nodes = self._get_blocked_nodes()
+                # Get blocked nodes that are replicas of our master shards
+                blocked_nodes = self._get_blocked_replica_nodes()
                 
                 if blocked_nodes:
-                    logger.info(f"Found {len(blocked_nodes)} blocked nodes to check")
-                    for node in blocked_nodes:
-                        await self._check_and_recover_node(node)
+                    logger.info(f"Found {len(blocked_nodes)} blocked replica nodes to check")
+                    for node, shard_ids in blocked_nodes:
+                        await self._check_and_recover_node(node, shard_ids)
                 else:
-                    logger.debug("No blocked nodes to check")
+                    logger.debug("No blocked replica nodes to check")
                 
                 await asyncio.sleep(self.check_interval)
                 
@@ -84,14 +85,42 @@ class NodeRecoveryService:
                 logger.error(f"Error in health check loop: {e}", exc_info=True)
                 await asyncio.sleep(self.check_interval)
     
-    def _get_blocked_nodes(self) -> list[ClusterNode]:
-        """Get list of currently blocked nodes."""
-        return [node for node in cluster_manager.cluster_nodes if node.blocked]
+    def _has_master_shards(self) -> bool:
+        """Check if this node has any master shards."""
+        return any(shard.role.value == "master" for shard in cluster_manager.shards)
     
-    async def _check_and_recover_node(self, node: ClusterNode):
-        """Check if a blocked node is healthy and recover it if possible."""
+    def _get_master_shard_ids(self) -> list[int]:
+        """Get list of shard IDs where this node is master."""
+        return [shard.shard_id for shard in cluster_manager.shards 
+                if shard.role.value == "master"]
+    
+    def _get_blocked_replica_nodes(self) -> list[tuple[ClusterNode, list[int]]]:
+        """
+        Get list of blocked nodes that are replicas of shards we master.
+        Returns list of tuples: (node, [shard_ids])
+        """
+        master_shard_ids = self._get_master_shard_ids()
+        blocked_replicas = []
+        
+        for node in cluster_manager.cluster_nodes:
+            if not node.blocked:
+                continue
+            
+            # Find which of our master shards this node replicates
+            replicated_shards = [
+                shard_id for shard_id in master_shard_ids
+                if node.is_slave_of(shard_id)
+            ]
+            
+            if replicated_shards:
+                blocked_replicas.append((node, replicated_shards))
+        
+        return blocked_replicas
+    
+    async def _check_and_recover_node(self, node: ClusterNode, shard_ids: list[int]):
+        """Check if a blocked replica node is healthy and recover it if possible."""
         try:
-            logger.info(f"Checking blocked node: {node.url}")
+            logger.info(f"Checking blocked node: {node.url} (replica of shards: {shard_ids})")
             
             # Try to ping the node
             if not await self._ping_node(node):
@@ -101,12 +130,17 @@ class NodeRecoveryService:
             logger.info(f"Node {node.url} is responsive, starting catchup process")
             
             # Determine catchup timestamp
-            # If node has never been updated, catch up from 1 hour ago
+            # If node has never been updated, catch up from beginning (None)
+            # Otherwise catch up from last update
             catchup_from = node.last_update
             
-            logger.info(f"Catching up node {node.url} from {catchup_from}")
+            if catchup_from:
+                logger.info(f"Catching up node {node.url} from {catchup_from}")
+            else:
+                logger.info(f"Catching up node {node.url} from beginning (no previous update)")
             
             # Send batch writes to catch up the node
+            # The batch will only include modifications for the shards this node replicates
             if await cluster_manager.send_batch_writes(node.url, catchup_from):
                 logger.info(f"Successfully caught up node {node.url}")
                 # Unblock the node

@@ -5,67 +5,219 @@ from datetime import datetime
 from config import settings
 import logging
 from cluster.modification_history import modification_history
+from enum import Enum
+from dataclasses import dataclass
+import jump
+import uuid
 
 logger = logging.getLogger(__name__)
+
+class ShardRole(Enum):
+    MASTER = "master"
+    REPLICA = "replica"
+
+@dataclass
+class Shard:
+    shard_id: int
+    role: ShardRole
+
+    def __hash__(self):
+        return hash(self.shard_id)
+
+    def __eq__(self, other):
+        if not isinstance(other, Shard):
+            return False
+        return self.shard_id == other.shard_id
 
 class ClusterNode:
     def __init__(self, url: str):
         self.url = url
         self.blocked = False
         self.last_update: Optional[datetime] = None
+        self.shards: List[Shard] = []
+        
+    def is_slave_of(self, shard_id: int) -> bool:
+        for shard in self.shards:
+            if shard.shard_id == shard_id and shard.role != ShardRole.MASTER:
+                return True
+        return False
+    
+    def is_master_of(self, shard_id: int) -> bool:
+        for shard in self.shards:
+            if shard.shard_id == shard_id and shard.role == ShardRole.MASTER:
+                return True
+        return False
 
 class ClusterManager:
     def __init__(self):
         logger.debug("Initializing ClusterManager")
-        self.is_master: bool = False
+        self.shards: List[Shard] = []
+        self.n_shards: int = 0
         self.cluster_nodes: List[ClusterNode] = []
         self._lock = asyncio.Lock()
         self._client = httpx.AsyncClient(timeout=5.0)
         self.get_self_url()
         logger.info(f"ClusterManager initialized with self_url: {self.self_url}")
+        
 
     async def initialize(self):
         logger.info("Initializing cluster manager...")
-        await self._fetch_cluster_info()
-        logger.info(f"Cluster manager initialized - is_master: {self.is_master}, nodes: {len(self.cluster_nodes)}")
+        # Initial state will be empty, waiting for coordinator to push shard updates
+        logger.info(f"Cluster manager initialized - waiting for shard assignments")
 
-    async def _fetch_cluster_info(self):
+    def update_shard_state(self, shard_state: dict) -> None:
+        """
+        Update shard state from coordinator notification.
+        
+        Args:
+            shard_state: Dictionary mapping instance URLs to their shard assignments
+                        Format: {
+                            "http://host:port": {
+                                "master_shards": [0, 1],
+                                "replica_shards": [2, 3]
+                            },
+                            ...
+                        }
+        """
         try:
-            logger.debug(f"Fetching cluster info from {settings.coordinator_url}")
-            response = await self._client.get(f"{settings.coordinator_url}/cluster-status")
-            data = response.json()
+            logger.info(f"Updating shard state with {len(shard_state)} instances")
             
-            async with self._lock:
-                master_node = data.get("master")
-                self.is_master = (master_node == self.get_self_url())
-                logger.debug(f"Cluster master node: {master_node}, self_url: {self.get_self_url()}, is_self_master: {self.is_master}")
+            self_url = self.get_self_url()
+            
+            # Calculate total number of shards from the state
+            all_shards = set()
+            for instance_data in shard_state.values():
+                all_shards.update(instance_data.get("master_shards", []))
+                all_shards.update(instance_data.get("replica_shards", []))
+            
+            self.n_shards = len(all_shards) if all_shards else 0
+            
+            # Update this node's shard assignments
+            if self_url in shard_state:
+                self_data = shard_state[self_url]
+                self.shards = []
                 
-                node_urls = data.get("health_status", {}).keys()
-                self.cluster_nodes = [ClusterNode(url) for url in node_urls if url != self.get_self_url()]
+                for shard_id in self_data.get("master_shards", []):
+                    self.shards.append(Shard(shard_id=shard_id, role=ShardRole.MASTER))
                 
-            logger.info(f"Cluster info fetched - Master: {master_node}, Nodes: {len(self.cluster_nodes)}")
+                for shard_id in self_data.get("replica_shards", []):
+                    self.shards.append(Shard(shard_id=shard_id, role=ShardRole.REPLICA))
+                
+                logger.info(f"Updated self shards: {[(s.shard_id, s.role.value) for s in self.shards]}")
+            else:
+                logger.warning(f"Self URL {self_url} not found in shard state")
+                self.shards = []
+            
+            # Update cluster nodes and their shard assignments
+            updated_nodes = []
+            for instance_url, instance_data in shard_state.items():
+                if instance_url == self_url:
+                    continue
+                
+                # Find existing node or create new one
+                existing_node = None
+                for node in self.cluster_nodes:
+                    if node.url == instance_url:
+                        existing_node = node
+                        break
+                
+                node = existing_node if existing_node else ClusterNode(instance_url)
+                node.shards = []
+                
+                for shard_id in instance_data.get("master_shards", []):
+                    node.shards.append(Shard(shard_id=shard_id, role=ShardRole.MASTER))
+                
+                for shard_id in instance_data.get("replica_shards", []):
+                    node.shards.append(Shard(shard_id=shard_id, role=ShardRole.REPLICA))
+                
+                updated_nodes.append(node)
+            
+            self.cluster_nodes = updated_nodes
+            
+            logger.info(f"Shard state updated - Total shards: {self.n_shards}, Cluster nodes: {len(self.cluster_nodes)}")
+            
         except Exception as e:
-            logger.error(f"Error fetching cluster info: {e}", exc_info=True)
-            self.is_master = True
-            self.cluster_nodes = []
+            logger.error(f"Error updating shard state: {e}", exc_info=True)
+            raise
 
     def get_self_url(self) -> str:
         self.self_url = f"http://{settings.node_host}:{settings.node_port}"
         return self.self_url
+    
+    def create_uuid_from_shard(self) -> str:
+        master_shards = [shard.shard_id for shard in self.shards if shard.role == ShardRole.MASTER]
+        while True:
+            id: str = str(uuid.uuid4())
+            shard_id = self._get_shard_for_entity(id)
+            if shard_id in master_shards:
+                return id
 
-    def _get_available_nodes(self) -> List[ClusterNode]:
-        """Returns list of unblocked nodes."""
-        return [node for node in self.cluster_nodes if not node.blocked]
+    def _uuid_to_int(self, uuid_str: str) -> int:
+        """Convert UUID string to integer for jump hash."""
+        # Remove dashes and convert hex to int
+        hex_str = uuid_str.replace('-', '')
+        return int(hex_str, 16)
+
+    def _get_shard_for_entity(self, entity_id: str) -> int:
+        """Determine which shard an entity belongs to using jump hash."""
+        if self.n_shards == 0:
+            raise Exception("Cluster not ready: shard count is 0")
+        
+        # Convert entity_id to integer
+        entity_int = self._uuid_to_int(entity_id)
+        
+        # Use jump hash algorithm
+        shard_id = self._jump_hash(entity_int, self.n_shards)
+        return shard_id
+    
+    def _jump_hash(self, key: int, num_buckets: int) -> int:
+        """
+        Jump consistent hash algorithm.
+        Returns a bucket number in [0, num_buckets).
+        """
+        return jump.hash(key, num_buckets)
+
+    def _is_master_of_shard(self, shard_id: int) -> bool:
+        """Check if this node is the master for the given shard."""
+        for shard in self.shards:
+            if shard.shard_id == shard_id and shard.role == ShardRole.MASTER:
+                return True
+        return False
+
+    def _is_responsible_for_entity(self, entity_id: str) -> bool:
+        """Check if this node is responsible (master or replica) for the entity."""
+        try:
+            shard_id = self._get_shard_for_entity(entity_id)
+            return any(s.shard_id == shard_id for s in self.shards)
+        except Exception:
+            return False
+
+    def _get_available_nodes_for_shard(self, shard_id: int) -> List[ClusterNode]:
+        """Returns list of unblocked replica nodes for a specific shard."""
+        return [
+            node for node in self.cluster_nodes 
+            if not node.blocked and node.is_slave_of(shard_id)
+        ]
 
     async def replicate_write(self, operation: str, entity_type: str, entity_id: str, data: dict) -> bool:
-        if not self.is_master: #shard
-            logger.debug(f"Not master node, cant write")
-            raise Exception("Node is not master")
+        """Replicate write operation to replica nodes of the same shard."""
         
-        logger.info(f"Replicating {operation} - Entity: {entity_type}:{entity_id}")
+        # Determine which shard this entity belongs to
+        try:
+            shard_id = self._get_shard_for_entity(entity_id)
+        except Exception as e:
+            logger.error(f"Cannot determine shard for entity {entity_id}: {e}")
+            raise
         
-        # Get available (unblocked) nodes
-        available_nodes = self._get_available_nodes()
+        # Check if this node is the master for this shard
+        if not self._is_master_of_shard(shard_id):
+            logger.debug(f"Not master of shard {shard_id}, cannot write")
+            raise Exception(f"Node is not master of shard {shard_id}")
+        
+        logger.info(f"Replicating {operation} - Entity: {entity_type}:{entity_id} (Shard: {shard_id})")
+        
+        # Get available replica nodes for this shard
+        available_nodes = self._get_available_nodes_for_shard(shard_id)
         required_acks = settings.write_quorum - 1
         
         # Check if we have enough available nodes to meet quorum
@@ -174,11 +326,11 @@ class ClusterManager:
     async def send_batch_writes(self, node_url: str, since_timestamp: datetime | None) -> bool:
         """Send batch of modifications to a node to catch it up."""
         try:
-            
-            
             logger.info(f"Sending batch writes to {node_url} since {since_timestamp}")
             
             modifications = await modification_history.get_recent_modifications(since_timestamp)
+            
+            modifications = [mod for mod in modifications if self._is_responsible_for_entity(mod.entity_id)]
             
             if not modifications:
                 logger.info(f"No modifications to send to {node_url}")
@@ -226,16 +378,29 @@ class ClusterManager:
 
     def get_status(self) -> dict:
         return {
-            "is_master": self.is_master,
+            "n_shards": self.n_shards,
+            "shards": [
+                {
+                    "shard_id": shard.shard_id,
+                    "role": shard.role.value
+                }
+                for shard in self.shards
+            ],
             "cluster_nodes": [
                 {
                     "url": node.url,
                     "blocked": node.blocked,
-                    "last_update": node.last_update.isoformat() if node.last_update else None
+                    "last_update": node.last_update.isoformat() if node.last_update else None,
+                    "shards": [
+                        {
+                            "shard_id": shard.shard_id,
+                            "role": shard.role.value
+                        }
+                        for shard in node.shards
+                    ]
                 }
                 for node in self.cluster_nodes
             ],
-            "available_nodes": len(self._get_available_nodes()),
             "total_nodes": len(self.cluster_nodes)
         }
 

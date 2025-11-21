@@ -30,7 +30,7 @@ class BaseRepository:
         return self._locks[key]
     
     async def _replicate_and_commit(self, operation: str, entity_id: str, data: Any) -> bool:
-        if not cluster_manager.is_master:
+        if not cluster_manager._is_responsible_for_entity(entity_id):
             logger.debug(f"Not master node, cant write")
             raise HTTPException(status_code=500, detail="Node is not master, cannot perform write operations")
         data_dict = data.model_dump() if hasattr(data, 'model_dump') else data
@@ -273,5 +273,6 @@ class Storage:
             "notification": self.notifications
         }
         return repo_map.get(entity_type)
+    
 
 storage = Storage()

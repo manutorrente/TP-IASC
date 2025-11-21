@@ -134,3 +134,27 @@ async def cluster_status(cluster_manager: ClusterManager = Depends(get_cluster_m
     except Exception as e:
         logger.error(f"Error fetching cluster status: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    
+class ShardUpdateRequest(BaseModel):
+    shard_state: Dict[str, Dict[str, List[int]]]
+
+
+@router.post("/shard-update")
+async def shard_update(
+    request: ShardUpdateRequest,
+    cluster_manager: ClusterManager = Depends(get_cluster_manager)
+):
+    """
+    Update local shard state when another instance notifies changes.
+    """
+    try:
+        logger.info("Received shard update notification")
+
+        cluster_manager.update_shard_state(request.shard_state)
+
+        logger.info("Shard state updated successfully")
+        return {"status": "ok"}
+
+    except Exception as e:
+        logger.error(f"Error handling shard update: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
