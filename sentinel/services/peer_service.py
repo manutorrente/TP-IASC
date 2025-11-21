@@ -166,18 +166,20 @@ class PeerService:
         await asyncio.gather(*(peer.notify_coordinator(self.self_peer) for peer in self.peers))
 
     def subjective_choose_coordinator_peer(self) -> RemoteSentinelPeer:
-        peers = self.peers + [self.self_peer]
-        sorted_peers = sorted(peers, key=lambda p: (p.host, p.port))
-        sorted_peers = [peer for peer in sorted_peers if peer not in self.offline_peers]
-        logger.info(f"Subjectively chosen coordinator is {sorted_peers[0].host}:{sorted_peers[0].port}")
-        chosen = sorted_peers[0]
-        if chosen == self.self_peer and self.self_peer not in self.votes_for_coordinator:
-            logger.info("Self is the subjectively chosen coordinator.")
-            self.votes_for_coordinator.add(self.self_peer)
-        elif self.self_peer in self.votes_for_coordinator and chosen != self.self_peer:
-            logger.info("Self is not the subjectively chosen coordinator anymore. Removing self vote.")
-            self.votes_for_coordinator.remove(self.self_peer)
-        return chosen
+        if self.objective_coordinator in self.offline_peers or self.objective_coordinator is None:
+            peers = self.peers + [self.self_peer]
+            sorted_peers = sorted(peers, key=lambda p: (p.host, p.port))
+            sorted_peers = [peer for peer in sorted_peers if peer not in self.offline_peers]
+            logger.info(f"Subjectively chosen coordinator is {sorted_peers[0].host}:{sorted_peers[0].port}")
+            chosen = sorted_peers[0]
+            if chosen == self.self_peer and self.self_peer not in self.votes_for_coordinator:
+                logger.info("Self is the subjectively chosen coordinator.")
+                self.votes_for_coordinator.add(self.self_peer)
+            elif self.self_peer in self.votes_for_coordinator and chosen != self.self_peer:
+                logger.info("Self is not the subjectively chosen coordinator anymore. Removing self vote.")
+                self.votes_for_coordinator.remove(self.self_peer)
+            return chosen
+        return self.objective_coordinator
 
     async def notify_instance_down(self, instance: "AppInstance"):
         for peer in self.peers:
