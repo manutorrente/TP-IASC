@@ -15,6 +15,12 @@ import sys
 import uvicorn
 import logging
 
+# Import sharding components if enabled
+if settings.enable_sharding:
+    from cluster.shard_strategy import initialize_shard_strategy
+    from cluster.shard_manager import initialize_shard_manager
+    from cluster.sharded_storage import sharded_storage
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -29,19 +35,44 @@ logger.info(f"Configured node port: {settings.node_port}")
 async def lifespan(app: FastAPI):
     logger.info("Starting application lifespan...")
     try:
+        # Initialize sharding if enabled
+        if settings.enable_sharding:
+            logger.info("Initializing sharding components...")
+            initialize_shard_strategy(settings.num_shards)
+            
+            self_url = f"http://{settings.node_host}:{settings.node_port}"
+            shard_mgr = initialize_shard_manager(settings.num_shards, self_url)
+            logger.info(f"Shard strategy and manager initialized with {settings.num_shards} shards")
+            
+            # Use sharded storage
+            active_storage = sharded_storage
+            logger.info("Using sharded storage")
+        else:
+            active_storage = storage
+            logger.info("Using standard storage")
+        
         logger.info("Initializing services with storage")
-        notification_service.set_storage(storage)
-        window_service.set_storage(storage)
+        notification_service.set_storage(active_storage)
+        window_service.set_storage(active_storage)
         window_service.set_notification_service(notification_service)
-        reservation_service.set_storage(storage)
+        reservation_service.set_storage(active_storage)
         reservation_service.set_window_service(window_service)
         reservation_service.set_notification_service(notification_service)
-        node_recovery_service.set_storage(storage)
+        node_recovery_service.set_storage(active_storage)
         logger.info("Services initialized successfully")
         
         logger.info("Initializing cluster manager...")
         await cluster_manager.initialize()
         logger.info("Cluster manager initialized successfully")
+        
+        # Initialize shard manager with cluster nodes if sharding enabled
+        if settings.enable_sharding:
+            logger.info("Initializing shard assignments...")
+            # Get cluster nodes from cluster manager
+            cluster_nodes = [node.url for node in cluster_manager.cluster_nodes]
+            cluster_nodes.append(cluster_manager.get_self_url())
+            await shard_mgr.initialize(cluster_nodes)
+            logger.info(f"Shard assignments initialized with {len(cluster_nodes)} nodes")
         
         logger.info("Starting background tasks...")
         notification_task = asyncio.create_task(notification_service.start())
@@ -68,6 +99,12 @@ async def lifespan(app: FastAPI):
         
         logger.info("Shutting down cluster manager...")
         await cluster_manager.shutdown()
+        
+        # Shutdown shard manager if enabled
+        if settings.enable_sharding:
+            logger.info("Shutting down shard manager...")
+            await shard_mgr.shutdown()
+        
         logger.info("Application shutdown complete")
     except Exception as e:
         logger.error(f"Error during lifespan: {e}", exc_info=True)
