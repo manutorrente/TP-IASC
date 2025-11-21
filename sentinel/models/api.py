@@ -50,13 +50,18 @@ class MasterNotification(BaseModel):
 
 class InstanceHealth(BaseModel):
     is_locally_up: bool = Field(..., description="Whether instance is up according to local checks")
+    is_objectively_up: bool = Field(..., description="Whether instance is considered up by quorum")
     remote_down_counter: int = Field(..., description="Number of remote peers reporting this instance as down")
 
+class InstanceShards(BaseModel):
+    instance: str = Field(..., description="Instance address")
+    master_shards: List[int] = Field(..., description="List of master shards managed by the instance")
+    replica_shards: List[int] = Field(..., description="List of replica shards managed by the instance")
 
 class ClusterStatusResponse(BaseModel):
     total_instances: int = Field(..., description="Total number of instances in cluster")
     health_status: Dict[str, InstanceHealth] = Field(..., description="Health status of each instance")
-    master: Optional[str] = Field(None, description="Current master instance address")
+    shards: List[InstanceShards] = Field(..., description="Shard distribution across instances")
 
 
 class PeersResponse(BaseModel):

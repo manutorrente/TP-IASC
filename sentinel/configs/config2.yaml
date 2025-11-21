@@ -1,7 +1,7 @@
 host: localhost
 port: 8002
 
-polling_interval: 60
+polling_interval: 5
 
 sentinel_peers:
   - host: "localhost"

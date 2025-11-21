@@ -56,7 +56,7 @@ async def lifespan(app: FastAPI):
 
     app.state.config = config
     app.state.cluster = Cluster(instances=[])
-    app.state.peer_service = PeerService(self_peer=RemoteSentinelPeer(config.host, config.port))
+    app.state.peer_service = PeerService(self_peer=RemoteSentinelPeer(config.host, config.port), cluster=app.state.cluster)
     app.state.failover_in_progress = False
 
     for instance in config.app_instances:

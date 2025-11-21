@@ -84,12 +84,13 @@ class RemoteSentinelPeer(AppMixin):
 
 
 class PeerService:
-    def __init__(self, self_peer: RemoteSentinelPeer):
+    def __init__(self, self_peer: RemoteSentinelPeer, cluster: "Cluster"):
         self.peers: list[RemoteSentinelPeer] = []
         self.offline_peers: set[RemoteSentinelPeer] = set()
         self.objectively_down_instances: set["AppInstance"] = set()
         self.locally_down_instances: set["AppInstance"] = set()
         self.self_peer = self_peer
+        self.cluster = cluster
         self.objective_coordinator: Optional[RemoteSentinelPeer] = None
         self.votes_for_coordinator = set()
 
@@ -194,10 +195,12 @@ class PeerService:
 
     async def objectively_down_action(self, instance: "AppInstance"):
         logger.warning(f"Instance {instance.host}:{instance.port} is objectively down.")
+        instance.is_objectively_up = False
+        self.cluster.assign_shards()
 
         if self.objective_coordinator == self.self_peer:
             logger.info(f"Self is the objective coordinator, initiating failover for instance {instance.host}:{instance.port}")
-            self.failover
+            await self.failover(instance)
 
     async def failover(self, instance: "AppInstance"):
         failover_info = FailoverNotification(
@@ -240,6 +243,8 @@ class PeerService:
 
         if instance in self.objectively_down_instances and instance.down_count() < self.quorum_threshold():
             logger.info(f"Instance {instance.host}:{instance.port} recovered from objectively down state.")
+            instance.is_objectively_up = True
+            self.cluster.assign_shards()
             self.objectively_down_instances.remove(instance)
             return
 

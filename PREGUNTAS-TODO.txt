@@ -14,3 +14,8 @@ load balancer
 failover
 
 implementar writes con funcion gather n -> a revisar
+
+
+falta hacer que la eleccion de shards incluya last update
+
+

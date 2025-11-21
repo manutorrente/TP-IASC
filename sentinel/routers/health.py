@@ -1,7 +1,7 @@
 import asyncio
 from fastapi import APIRouter, Depends
-from models.api import HealthResponse, ClusterStatusResponse, PeersResponse, InstanceHealth
-from models.domain import Cluster
+from models.api import HealthResponse, ClusterStatusResponse, InstanceShards, PeersResponse, InstanceHealth
+from models.domain import Cluster, ShardRole
 from services.peer_service import PeerService
 from core.dependencies import get_cluster, get_peer_service
 
@@ -28,10 +28,22 @@ async def cluster_status(
         for instance in instances
     }
 
+    shards_info = []
+    for instance in instances:
+        master_shards = [shard.shard_id for shard in instance.shards if shard.role == ShardRole.MASTER]
+        replica_shards = [shard.shard_id for shard in instance.shards if shard.role != ShardRole.MASTER]
+        shards_info.append(
+            InstanceShards(
+                instance=str(instance),
+                master_shards=master_shards,
+                replica_shards=replica_shards
+            )
+        )
+
     return ClusterStatusResponse(
         total_instances=len(cluster.instances),
         health_status=health_status,
-        master=str(cluster.master) if cluster.master else None
+        shards=shards_info
     )
 
 

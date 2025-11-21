@@ -58,7 +58,7 @@ class ClusterManager:
         return [node for node in self.cluster_nodes if not node.blocked]
 
     async def replicate_write(self, operation: str, entity_type: str, entity_id: str, data: dict) -> bool:
-        if not self.is_master:
+        if not self.is_master: #shard
             logger.debug(f"Not master node, cant write")
             raise Exception("Node is not master")
         
