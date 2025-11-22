@@ -47,6 +47,10 @@ class Cluster:
             if instance.host == host and instance.port == port:
                 return instance
         return None
+    
+    def n_shard_partitions(self) -> int:
+        """Get the number of shard partitions in the cluster"""
+        return self.total_shards
 
     def _get_alive_instances(self) -> List['AppInstance']:
         """Get all instances that are currently up"""
@@ -73,6 +77,23 @@ class Cluster:
         if not counts:
             return None
         return min(counts, key=counts.get)
+    
+    def _get_master_for_shard(self, shard_id: int) -> Optional['AppInstance']:
+        """Get the master instance for a given shard ID"""
+        for instance in self.instances:
+            for shard in instance.shards:
+                if shard.shard_id == shard_id and shard.role == ShardRole.MASTER:
+                    return instance
+        return None
+    
+    def _get_slaves_for_shard(self, shard_id: int) -> List['AppInstance']:
+        """Get all replica instances for a given shard ID"""
+        replicas = []
+        for instance in self.instances:
+            for shard in instance.shards:
+                if shard.shard_id == shard_id and shard.role == ShardRole.REPLICA:
+                    replicas.append(instance)
+        return replicas
 
     def assign_shards(self, replication_factor: int = 2) -> None:
         """

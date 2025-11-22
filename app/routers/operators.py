@@ -5,18 +5,15 @@ from storage import Storage
 from services.window_service import WindowService
 from dependencies import get_storage, get_window_service
 from datetime import datetime, timedelta
-import uuid
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
-
-@router.post("/", response_model=Operator)
-async def create_operator(name: str, email: str, storage: Storage = Depends(get_storage)):
-    operator_id = str(uuid.uuid4())
+@router.post("", response_model=Operator)
+async def create_operator(operator_id: str, name: str, email: str, storage: Storage = Depends(get_storage)):
+    # operator_id now comes from load balancer as query parameter
     logger.info(f"Creating operator: {operator_id} - {name} ({email})")
     operator = Operator(
         id=operator_id,
@@ -38,10 +35,13 @@ async def get_operator(operator_id: str, storage: Storage = Depends(get_storage)
         raise HTTPException(status_code=404, detail="Operator not found")
     return operator
 
+class CreateWindowRequestWithId(CreateWindowRequest):
+    window_id: str  # Now received from load balancer
+
 @router.post("/{operator_id}/windows", response_model=Window)
 async def create_window(
     operator_id: str, 
-    request: CreateWindowRequest,
+    request: CreateWindowRequestWithId,
     storage: Storage = Depends(get_storage),
     window_service: WindowService = Depends(get_window_service)
 ):
@@ -55,9 +55,8 @@ async def create_window(
     
     closes_at = datetime.utcnow() + timedelta(minutes=request.offer_duration_minutes)
     
-    window_id = str(uuid.uuid4())
     window = Window(
-        id=window_id,
+        id=request.window_id,  # Use ID from load balancer
         operator_id=operator_id,
         satellite_name=request.satellite_name,
         satellite_type=request.satellite_type,
@@ -70,8 +69,8 @@ async def create_window(
     
     success = await window_service.create_window(window)
     if not success:
-        logger.error(f"Failed to create window: {window_id}")
+        logger.error(f"Failed to create window: {request.window_id}")
         raise HTTPException(status_code=500, detail="Failed to replicate write to cluster")
-    logger.info(f"Window created successfully: {window_id}")
+    logger.info(f"Window created successfully: {request.window_id}")
     
     return window

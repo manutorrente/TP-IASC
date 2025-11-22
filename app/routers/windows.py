@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.get("/", response_model=List[Window])
+@router.get("", response_model=List[Window])
 async def get_all_windows(storage: Storage = Depends(get_storage)):
     logger.info("Fetching all windows")
     windows = await storage.windows.get_all()

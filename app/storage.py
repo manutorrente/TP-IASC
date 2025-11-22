@@ -30,22 +30,37 @@ class BaseRepository:
         return self._locks[key]
     
     async def _replicate_and_commit(self, operation: str, entity_id: str, data: Any) -> bool:
-        if not cluster_manager._is_responsible_for_entity(entity_id):
-            logger.debug(f"Not master node, cant write")
-            raise HTTPException(status_code=500, detail="Node is not master, cannot perform write operations")
-        data_dict = data.model_dump() if hasattr(data, 'model_dump') else data
-        logger.debug(f"Replicating {operation} for {self._entity_type}:{entity_id}")
-        success = await cluster_manager.replicate_write(
-            operation, self._entity_type, entity_id, data_dict
-        )
-        if not success:
-            logger.warning(f"Replication failed for {operation} on {self._entity_type}:{entity_id}")
+        try:
+            logger.debug(f"Starting replication: operation={operation}, entity_type={self._entity_type}, entity_id={entity_id}")
+            
+            if not cluster_manager._is_master_for_entity(entity_id):
+                logger.error(f"Not master node for {self._entity_type}:{entity_id}")
+                raise HTTPException(status_code=500, detail=f"Node is not master for {self._entity_type}:{entity_id}, cannot perform write operations")
+            
+            logger.debug(f"Node is master, converting data to dict")
+            data_dict = data.model_dump(mode='json') if hasattr(data, 'model_dump') else data
+            logger.debug(f"Data converted successfully: {type(data_dict)}")
+            
+            logger.debug(f"Calling cluster_manager.replicate_write for {self._entity_type}:{entity_id}")
+            success = await cluster_manager.replicate_write(
+                operation, self._entity_type, entity_id, data_dict
+            )
+            
+            if not success:
+                logger.error(f"Replication failed for {operation} on {self._entity_type}:{entity_id}")
+                return False
+            
+            logger.debug(f"Replication successful for {operation} on {self._entity_type}:{entity_id}")
+            
+            logger.debug(f"Recording modification history for {self._entity_type}:{entity_id}")
+            await modification_history.record(self._entity_type, entity_id, operation, data)
+            logger.debug(f"Recorded modification for {self._entity_type}:{entity_id} operation:{operation}")
+            return True
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Exception in _replicate_and_commit for {self._entity_type}:{entity_id}: {str(e)}", exc_info=True)
             return False
-        logger.debug(f"Replication successful for {operation} on {self._entity_type}:{entity_id}")
-        
-        await modification_history.record(self._entity_type, entity_id, operation, data)
-        logger.debug(f"Recorded modification for {self._entity_type}:{entity_id} operation:{operation}")
-        return True
     
     async def prepare_write(self, entity_id: str, data: Any):
         lock = await self._get_lock(entity_id)
@@ -94,15 +109,20 @@ class UserRepository(BaseRepository):
         self._data: Dict[str, User] = {}
     
     async def add(self, user: User) -> bool:
-        lock = await self._get_lock(user.id)
-        async with lock:
-            logger.info(f"Adding user: {user.id} - {user.name}")
-            if not await self._replicate_and_commit("add", user.id, user):
-                logger.error(f"Failed to add user: {user.id}")
-                return False
-            self._data[user.id] = user
-            logger.info(f"User added successfully: {user.id}")
-            return True
+        try:
+            lock = await self._get_lock(user.id)
+            async with lock:
+                logger.info(f"Adding user: {user.id} - {user.name}")
+                logger.debug(f"Acquired lock for user {user.id}")
+                if not await self._replicate_and_commit("add", user.id, user):
+                    logger.error(f"Failed to add user: {user.id} - replication failed")
+                    return False
+                self._data[user.id] = user
+                logger.info(f"User added successfully: {user.id}")
+                return True
+        except Exception as e:
+            logger.error(f"Exception in UserRepository.add for {user.id}: {str(e)}", exc_info=True)
+            raise
     
     async def get(self, user_id: str) -> Optional[User]:
         user = self._data.get(user_id)

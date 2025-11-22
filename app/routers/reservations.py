@@ -1,20 +1,24 @@
 from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
 from models import Reservation, CreateReservationRequest, SelectResourceRequest
 from storage import Storage
 from services.reservation_service import ReservationService
 from dependencies import get_storage, get_reservation_service
 from typing import List
-import uuid
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.post("/", response_model=Reservation)
+class CreateReservationRequestWithId(BaseModel):
+    reservation_id: str  # Now received from load balancer
+    window_id: str
+
+@router.post("", response_model=Reservation)
 async def create_reservation(
     user_id: str, 
-    request: CreateReservationRequest,
+    request: CreateReservationRequestWithId,
     storage: Storage = Depends(get_storage),
     reservation_service: ReservationService = Depends(get_reservation_service)
 ):
@@ -24,9 +28,8 @@ async def create_reservation(
         logger.warning(f"User not found: {user_id}")
         raise HTTPException(status_code=404, detail="User not found")
     
-    reservation_id = str(uuid.uuid4())
     reservation = Reservation(
-        id=reservation_id,
+        id=request.reservation_id,  # Use ID from load balancer
         window_id=request.window_id,
         user_id=user_id
     )
@@ -34,9 +37,9 @@ async def create_reservation(
     try:
         result = await reservation_service.create_reservation(reservation)
         if not result:
-            logger.error(f"Failed to create reservation: {reservation_id}")
+            logger.error(f"Failed to create reservation: {request.reservation_id}")
             raise HTTPException(status_code=500, detail="Failed to replicate write to cluster")
-        logger.info(f"Reservation created successfully: {reservation_id}")
+        logger.info(f"Reservation created successfully: {request.reservation_id}")
         return result
     except ValueError as e:
         logger.warning(f"Invalid reservation request: {e}")

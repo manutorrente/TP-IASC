@@ -53,3 +53,5 @@ async def coordinator_change(
 ):
     peer_service.change_coordinator(payload.address)
     return {"message": "Coordinator change acknowledged"}
+
+

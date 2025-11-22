@@ -144,13 +144,6 @@ class ClusterManager:
         self.self_url = f"http://{settings.node_host}:{settings.node_port}"
         return self.self_url
     
-    def create_uuid_from_shard(self) -> str:
-        master_shards = [shard.shard_id for shard in self.shards if shard.role == ShardRole.MASTER]
-        while True:
-            id: str = str(uuid.uuid4())
-            shard_id = self._get_shard_for_entity(id)
-            if shard_id in master_shards:
-                return id
 
     def _uuid_to_int(self, uuid_str: str) -> int:
         """Convert UUID string to integer for jump hash."""
@@ -189,6 +182,14 @@ class ClusterManager:
         try:
             shard_id = self._get_shard_for_entity(entity_id)
             return any(s.shard_id == shard_id for s in self.shards)
+        except Exception:
+            return False
+        
+    def _is_master_for_entity(self, entity_id: str) -> bool:
+        """Check if this node is the master for the entity."""
+        try:
+            shard_id = self._get_shard_for_entity(entity_id)
+            return self._is_master_of_shard(shard_id)
         except Exception:
             return False
 
@@ -341,7 +342,7 @@ class ClusterManager:
                     "operation": mod.operation,
                     "entity_type": mod.entity_type,
                     "entity_id": mod.entity_id,
-                    "data": mod.data.model_dump() if hasattr(mod.data, 'model_dump') else mod.data,
+                    "data": mod.data.model_dump(mode='json') if hasattr(mod.data, 'model_dump') else mod.data,
                     "timestamp": mod.timestamp.isoformat()
                 }
                 for mod in modifications

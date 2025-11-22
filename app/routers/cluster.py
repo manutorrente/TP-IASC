@@ -5,11 +5,22 @@ from datetime import datetime
 from dependencies import get_storage, get_cluster_manager
 from cluster.cluster_manager import ClusterManager
 from storage import Storage
+from models import Operator, User, Window, Alert, Reservation, Notification
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Mapping of entity types to their Pydantic models
+ENTITY_MODEL_MAP = {
+    "operator": Operator,
+    "user": User,
+    "window": Window,
+    "alert": Alert,
+    "reservation": Reservation,
+    "notification": Notification,
+}
 
 class PrepareRequest(BaseModel):
     operation: str
@@ -44,7 +55,18 @@ async def prepare_write(request: PrepareRequest, storage: Storage = Depends(get_
             logger.warning(f"Invalid entity type: {request.entity_type}")
             raise HTTPException(status_code=400, detail="Invalid entity type")
         
-        await repository.prepare_write(request.entity_id, request.data)
+        # Deserialize the data dict to the appropriate Pydantic model
+        model_class = ENTITY_MODEL_MAP.get(request.entity_type)
+        if model_class:
+            try:
+                deserialized_data = model_class(**request.data)
+            except Exception as e:
+                logger.error(f"Error deserializing data for {request.entity_type}: {e}", exc_info=True)
+                raise HTTPException(status_code=400, detail=f"Invalid data format: {str(e)}")
+        else:
+            deserialized_data = request.data
+        
+        await repository.prepare_write(request.entity_id, deserialized_data)
         logger.info(f"Write prepared successfully for {request.entity_type}:{request.entity_id}")
         return {"status": "prepared"}
     except Exception as e:
@@ -102,7 +124,19 @@ async def batch_catchup(request: BatchCatchupRequest, storage: Storage = Depends
                 
                 logger.debug(f"Applying catchup modification: {mod.entity_type}:{mod.entity_id} operation:{mod.operation}")
                 
-                await repository.prepare_write(mod.entity_id, mod.data)
+                # Deserialize the data dict to the appropriate Pydantic model
+                model_class = ENTITY_MODEL_MAP.get(mod.entity_type)
+                if model_class:
+                    try:
+                        deserialized_data = model_class(**mod.data)
+                    except Exception as e:
+                        logger.error(f"Error deserializing data for {mod.entity_type}: {e}", exc_info=True)
+                        failed_count += 1
+                        continue
+                else:
+                    deserialized_data = mod.data
+                
+                await repository.prepare_write(mod.entity_id, deserialized_data)
                 await repository.commit_write(mod.entity_id)
                 
                 applied_count += 1

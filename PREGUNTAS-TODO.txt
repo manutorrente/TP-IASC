@@ -17,5 +17,6 @@ implementar writes con funcion gather n -> a revisar
 
 
 falta hacer que la eleccion de shards incluya last update
+como hacer con los reads en el load balancer
 
 

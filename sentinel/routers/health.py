@@ -1,9 +1,10 @@
 import asyncio
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from models.api import HealthResponse, ClusterStatusResponse, InstanceShards, PeersResponse, InstanceHealth
 from models.domain import Cluster, ShardRole
 from services.peer_service import PeerService
 from core.dependencies import get_cluster, get_peer_service
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -54,4 +55,35 @@ async def list_peers(peer_service: PeerService = Depends(get_peer_service)):
         peers=[f"{peer.host}:{peer.port}" for peer in peer_service.get_peers()],
         offline_peers=[f"{peer.host}:{peer.port}" for peer in peer_service.offline_peers],
         coordinator=f"{peer_service.objective_coordinator.host}:{peer_service.objective_coordinator.port}" if peer_service.objective_coordinator else None
+    )
+
+
+class ShardMasterResponse(BaseModel):
+    node_address: str
+    num_shards: int
+
+class ShardMasterRequest(BaseModel):
+    shard_id: int
+
+@router.get("/shard-master", response_model=ShardMasterResponse, tags=["Health"])
+async def get_shard_master(
+    shard_id: int = Query(...),
+    cluster: Cluster = Depends(get_cluster)
+):
+    return ShardMasterResponse(
+        node_address=str(cluster._get_master_for_shard(shard_id)),
+        num_shards=cluster.n_shard_partitions()
+    )
+    
+class ShardSlavesResponse(BaseModel):
+    slave_addresses: list[str]
+    
+@router.get("/shard-slaves", response_model=ShardSlavesResponse, tags=["Health"])
+async def get_shard_slaves(
+    shard_id: int = Query(...),
+    cluster: Cluster = Depends(get_cluster)
+):
+    slave_instances = cluster._get_slaves_for_shard(shard_id)
+    return ShardSlavesResponse(
+        slave_addresses=[str(instance) for instance in slave_instances]
     )
