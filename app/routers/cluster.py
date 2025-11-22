@@ -169,9 +169,73 @@ async def cluster_status(cluster_manager: ClusterManager = Depends(get_cluster_m
         logger.error(f"Error fetching cluster status: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     
+class ForwardWriteRequest(BaseModel):
+    operation: str
+    entity_type: str
+    entity_id: str
+    data: Dict[str, Any]
+
 class ShardUpdateRequest(BaseModel):
     shard_state: Dict[str, Dict[str, List[int]]]
 
+
+@router.post("/forward-write")
+async def forward_write(
+    request: ForwardWriteRequest,
+    storage: Storage = Depends(get_storage),
+    cluster_manager: ClusterManager = Depends(get_cluster_manager)
+):
+    """
+    Handle write requests forwarded from non-master nodes.
+    The master node will execute the write and replicate it to replicas.
+    """
+    try:
+        logger.info(f"Received forwarded write - Operation: {request.operation}, Entity: {request.entity_type}:{request.entity_id}")
+        
+        # Verify this node is the master for this entity
+        if not cluster_manager._is_master_for_entity(request.entity_id):
+            logger.error(f"This node is not master for {request.entity_type}:{request.entity_id}")
+            raise HTTPException(status_code=400, detail="This node is not the master for this entity")
+        
+        repository = storage.get_repository(request.entity_type)
+        if not repository:
+            logger.warning(f"Invalid entity type: {request.entity_type}")
+            raise HTTPException(status_code=400, detail="Invalid entity type")
+        
+        # Deserialize the data dict to the appropriate Pydantic model
+        model_class = ENTITY_MODEL_MAP.get(request.entity_type)
+        if model_class:
+            try:
+                deserialized_data = model_class(**request.data)
+            except Exception as e:
+                logger.error(f"Error deserializing data for {request.entity_type}: {e}", exc_info=True)
+                raise HTTPException(status_code=400, detail=f"Invalid data format: {str(e)}")
+        else:
+            deserialized_data = request.data
+        
+        # Execute the write operation using _replicate_and_commit
+        lock = await repository._get_lock(request.entity_id)
+        async with lock:
+            logger.debug(f"Executing forwarded write for {request.entity_type}:{request.entity_id}")
+            
+            # Call replicate_and_commit which will handle replication and modification history
+            success = await repository._replicate_and_commit(request.operation, request.entity_id, deserialized_data)
+            
+            if not success:
+                logger.error(f"Failed to replicate and commit forwarded write for {request.entity_type}:{request.entity_id}")
+                raise HTTPException(status_code=500, detail="Failed to process write operation")
+            
+            # Store the data locally
+            repository._data[request.entity_id] = deserialized_data
+            
+            logger.info(f"Forwarded write executed successfully for {request.entity_type}:{request.entity_id}")
+            return {"status": "success", "entity_type": request.entity_type, "entity_id": request.entity_id}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing forwarded write: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/shard-update")
 async def shard_update(
