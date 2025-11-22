@@ -95,7 +95,7 @@ class Cluster:
                     replicas.append(instance)
         return replicas
 
-    def assign_shards(self, replication_factor: int = 2) -> None:
+    async def assign_shards(self, replication_factor: int = 2) -> None:
         """
         Dynamically assigns or reassigns shards based on cluster state.
         """
@@ -118,10 +118,10 @@ class Cluster:
 
         # Check if we need to handle node changes
         self._handle_node_changes(replication_factor)
-        self._notify_shard_changes()
+        await self._notify_shard_changes()
         self._log_final_state()
 
-    def _notify_shard_changes(self) -> None:
+    async def _notify_shard_changes(self) -> None:
         
         state = {
             str(instance): {
@@ -382,10 +382,10 @@ class Cluster:
         self.master = self.instances[0]
         return self.master
 
-    def add_instances(self, instances: list[App]) -> None:
+    async def add_instances(self, instances: list[App]) -> None:
         for inst in instances:
             self.add_instance(inst.host, inst.port)
-        self.assign_shards()
+        await self.assign_shards()
 
     def get_instances_list(self) -> list[App]:
         return [App(host=instance.host, port=instance.port) for instance in self.instances]

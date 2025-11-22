@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
         peer = RemoteSentinelPeer(peer_sentinel.host, peer_sentinel.port)
         try:
             new_instances = await discover_peer_outgoing(peer.host, peer.port, app)
-            app.state.cluster.add_instances(new_instances)
+            await app.state.cluster.add_instances(new_instances)
 
         except Exception as e:
             logger.error(f"Error discovering peer {peer.host}:{peer.port} - {e}. Peer is possibly down", exc_info=True)

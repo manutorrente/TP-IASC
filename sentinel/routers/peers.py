@@ -23,7 +23,7 @@ async def discover_peer(
         raise HTTPException(status_code=400, detail="Invalid data: missing host or port")
 
     peer_service.add_peer(remote_peer)
-    cluster.add_instances(new_instances)
+    await cluster.add_instances(new_instances)
 
     local_cluster_info = cluster.get_instances_list()
 

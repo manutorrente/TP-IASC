@@ -119,7 +119,7 @@ async def create_alert(user_id: str, request: CreateAlertRequest):
             user_id,
             "POST",
             f"/users/{user_id}/alerts",
-            json={"alert_id": alert_id, "criteria": request.criteria.dict()}
+            json={"alert_id": alert_id, "criteria": request.criteria.model_dump(mode='json')}
         )
         logger.info(f"Successfully created alert {alert_id} for user {user_id}")
         return response
@@ -187,7 +187,7 @@ async def create_window(operator_id: str, request: CreateWindowRequest):
             operator_id,
             "POST",
             f"/operators/{operator_id}/windows",
-            json={"window_id": window_id, **request.dict()}
+            json={"window_id": window_id, **request.model_dump(mode='json')}
         )
         logger.info(f"Successfully created window {window_id} for operator {operator_id}")
         return response
@@ -293,7 +293,7 @@ async def select_resource(reservation_id: str, request: SelectResourceRequest):
             reservation_id,
             "POST",
             f"/reservations/{reservation_id}/select-resource",
-            json=request.dict()
+            json=request.model_dump()
         )
         logger.info(f"Successfully selected resource for reservation {reservation_id}")
         return response

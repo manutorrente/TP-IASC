@@ -196,7 +196,7 @@ class PeerService:
     async def objectively_down_action(self, instance: "AppInstance"):
         logger.warning(f"Instance {instance.host}:{instance.port} is objectively down.")
         instance.is_objectively_up = False
-        self.cluster.assign_shards()
+        await self.cluster.assign_shards()
 
         if self.objective_coordinator == self.self_peer:
             logger.info(f"Self is the objective coordinator, initiating failover for instance {instance.host}:{instance.port}")
@@ -244,7 +244,7 @@ class PeerService:
         if instance in self.objectively_down_instances and instance.down_count() < self.quorum_threshold():
             logger.info(f"Instance {instance.host}:{instance.port} recovered from objectively down state.")
             instance.is_objectively_up = True
-            self.cluster.assign_shards()
+            await self.cluster.assign_shards()
             self.objectively_down_instances.remove(instance)
             return
 

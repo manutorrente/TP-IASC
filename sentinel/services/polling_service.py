@@ -11,12 +11,15 @@ async def poll_task(app: FastAPI):
     config = app.state.config
     peer_service = app.state.peer_service
     interval = config.polling_interval
+    cluster = app.state.cluster
 
     while True:
         try:
             instances: list[AppInstance] = app.state.cluster.get_instances()
             await asyncio.gather(*[instance.is_healthy(peer_service) for instance in instances])
             await asyncio.sleep(interval)
+            if peer_service.objective_coordinator == peer_service.self_peer:
+                await cluster._notify_shard_changes()
         except Exception as e:
             logger.critical(f"Critical error in polling task: {e}", exc_info=True)
             raise e
