@@ -232,6 +232,7 @@ class ClusterManager:
         required_acks = settings.write_quorum - 1
         
         logger.debug(f"Found {len(available_nodes)} available replica nodes for shard {shard_id}, need {required_acks} acks")
+        logger.debug(f"Available nodes: {[node.url for node in available_nodes]}")
         
         # Check if we have enough available nodes to meet quorum
         if len(available_nodes) < required_acks:

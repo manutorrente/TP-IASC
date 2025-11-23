@@ -3,14 +3,22 @@ import json
 from datetime import datetime, timedelta
 import random
 import time
+import sys
 
 # Configuration
 BASE_URL = "http://localhost:7000"  # Adjust to your API URL
 API_PREFIX = ""  # Adjust if needed
+WAIT_MODE = "--wait" in sys.argv
 
 def log(message):
     """Simple logging function"""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
+
+def wait_for_input():
+    """Wait for user input if in wait mode"""
+    if WAIT_MODE:
+        input("Press Enter to continue to the next request...")
+
 
 def create_users():
     """Create mock users"""
@@ -51,6 +59,7 @@ def create_users():
                 log(f"✗ Failed to create user {user_data['name']}: {response.status_code}")
         except Exception as e:
             log(f"✗ Error creating user {user_data['name']}: {e}")
+        wait_for_input()
     
     return created_users
 
@@ -94,6 +103,7 @@ def create_operators():
                 log(f"✗ Failed to create operator {op_data['name']}: {response.status_code}")
         except Exception as e:
             log(f"✗ Error creating operator {op_data['name']}: {e}")
+        wait_for_input()
     
     return created_operators
 
@@ -159,6 +169,7 @@ def create_windows(operators):
                     log(f"✗ Failed to create window: {response.status_code}")
             except Exception as e:
                 log(f"✗ Error creating window: {e}")
+            wait_for_input()
     
     return created_windows
 
@@ -207,6 +218,7 @@ def create_alerts(users):
                     log(f"✗ Failed to create alert: {response.status_code}")
             except Exception as e:
                 log(f"✗ Error creating alert: {e}")
+            wait_for_input()
     
     return created_alerts
 
@@ -242,7 +254,9 @@ def create_reservations(users, windows):
         except Exception as e:
             log(f"✗ Error creating reservation: {e}")
         
-        time.sleep(0.1)  # Small delay to avoid overwhelming the API
+        if not WAIT_MODE:
+            time.sleep(0.1)  # Small delay to avoid overwhelming the API
+        wait_for_input()
     
     return created_reservations
 
@@ -280,7 +294,9 @@ def select_resources(reservations, windows):
         except Exception as e:
             log(f"✗ Error selecting resource: {e}")
         
-        time.sleep(0.1)
+        if not WAIT_MODE:
+            time.sleep(0.1)
+        wait_for_input()
 
 def cancel_some_reservations(reservations):
     """Cancel some reservations"""
@@ -301,7 +317,9 @@ def cancel_some_reservations(reservations):
         except Exception as e:
             log(f"✗ Error cancelling reservation: {e}")
         
-        time.sleep(0.1)
+        if not WAIT_MODE:
+            time.sleep(0.1)
+        wait_for_input()
 
 def main():
     """Main function to populate the API"""
