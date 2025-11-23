@@ -373,6 +373,50 @@ class ClusterManager:
             await self._client.aclose()
         logger.info("Cluster manager shutdown complete")
 
+    async def _send_write_to_master(self, entity_id: str, entity_type: str, operation: str, data: dict) -> bool:
+        """
+        Send a write to the master node of the given entity.
+        Returns True if the write was successfully replicated and committed to the master's quorum.
+        This should only be called when this node is NOT the master for this entity.
+        """
+        try:
+            shard_id = self._get_shard_for_entity(entity_id)
+            
+            # Find the master node for this shard
+            master_node = None
+            for node in self.cluster_nodes:
+                if node.is_master_of(shard_id):
+                    master_node = node
+                    break
+            
+            if not master_node:
+                logger.error(f"No master node found for entity {entity_type}:{entity_id} (shard {shard_id})")
+                raise Exception(f"No master node found for shard {shard_id}")
+            
+            logger.info(f"Forwarding write to master node {master_node.url} for {entity_type}:{entity_id}")
+            
+            response = await self._client.post(
+                f"{master_node.url}/cluster/forward-write",
+                json={
+                    "operation": operation,
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "data": data
+                },
+                timeout=15.0
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"Write forwarded successfully to master for {entity_type}:{entity_id}")
+                return True
+            else:
+                logger.error(f"Master node rejected write for {entity_type}:{entity_id}: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error forwarding write to master for {entity_type}:{entity_id}: {e}", exc_info=True)
+            return False
+
     async def send_batch_writes(self, node_url: str, since_timestamp: datetime | None) -> bool:
         """Send batch of modifications to a node to catch it up."""
         try:

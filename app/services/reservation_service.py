@@ -1,6 +1,8 @@
 import asyncio
 from models import Reservation, Window, ResourceType, ReservationStatus, WindowStatus
 import logging
+from storage import Storage
+from cluster.cluster_manager import cluster_manager
 
 logger = logging.getLogger(__name__)
 
@@ -8,7 +10,7 @@ class ReservationService:
     def __init__(self, storage=None, window_service=None, notification_service=None):
         logger.debug("Initializing ReservationService")
         self._window_resource_locks: dict[str, asyncio.Lock] = {}
-        self._storage = storage
+        self._storage: Storage = storage
         self._window_service = window_service
         self._notification_service = notification_service
     
@@ -104,28 +106,84 @@ class ReservationService:
             logger.debug(f"Resource reserved for user: {reservation.user_id}")
             
             reservation.selected_resource = resource_type
-            
-            window_success = await self._storage.windows.update(window)
-            reservation_success = await self._storage.reservations.update(reservation)
-            
-            if not window_success or not reservation_success:
-                logger.error(f"Failed to update window or reservation during resource selection: {reservation_id}")
-                return None
-            
-            # Only mark as COMPLETED after successful storage updates
             reservation.status = ReservationStatus.COMPLETED
-            reservation_success = await self._storage.reservations.update(reservation)
             
+            # Determine which nodes are masters for each entity
+            window_is_local_master = cluster_manager._is_master_for_entity(window.id)
+            reservation_is_local_master = cluster_manager._is_master_for_entity(reservation_id)
+            
+            logger.debug(f"Window {window.id} master is local: {window_is_local_master}")
+            logger.debug(f"Reservation {reservation_id} master is local: {reservation_is_local_master}")
+            
+            # Case 1: Both entities have this node as master
+            if window_is_local_master and reservation_is_local_master:
+                logger.debug("Both entities are local masters - using normal update flow")
+                window_success = await self._storage.windows.update(window)
+                reservation_success = await self._storage.reservations.update(reservation)
+                
+                if not window_success or not reservation_success:
+                    logger.error(f"Failed to update window or reservation during resource selection: {reservation_id}")
+                    return None
+                
+                logger.info(f"Resource selected successfully: {reservation_id}")
+                
+                if await self._window_service._all_resources_occupied(window):
+                    logger.info(f"All resources occupied for window: {window.id}")
+                    asyncio.create_task(self._window_service.close_window(window.id, "all resources occupied"))
+                
+                return reservation
+            
+            # Case 2: Entities have different masters
+            # Strategy: Update local master first, then release lock and forward writes to remote masters
+            logger.info(f"Cross-master write detected - Reservation master local: {reservation_is_local_master}, Window master local: {window_is_local_master}")
+            
+            # Update the entity we are master for
+            if reservation_is_local_master:
+                logger.debug(f"Updating reservation locally (we are master)")
+                reservation_success = await self._storage.reservations.update(reservation)
+                if not reservation_success:
+                    logger.error(f"Failed to update reservation locally: {reservation_id}")
+                    return None
+            
+            if window_is_local_master:
+                logger.debug(f"Updating window locally (we are master)")
+                window_success = await self._storage.windows.update(window)
+                if not window_success:
+                    logger.error(f"Failed to update window locally: {window.id}")
+                    return None
+            
+            # Now release the lock BEFORE forwarding writes to remote masters
+            # This prevents deadlocks when the remote master tries to send us prepare/commit requests
+            logger.debug(f"Releasing lock for window {window.id} before forwarding to remote masters")
+        
+        # After releasing the lock, forward writes to remote masters if needed
+        if not reservation_is_local_master:
+            logger.info(f"Forwarding reservation write to remote master for {reservation_id}")
+            reservation_data = reservation.model_dump(mode='json')
+            reservation_success = await cluster_manager._send_write_to_master(
+                reservation_id, "reservation", "update", reservation_data
+            )
             if not reservation_success:
-                logger.error(f"Failed to update reservation status to COMPLETED: {reservation_id}")
-                return None
-            logger.info(f"Resource selected successfully: {reservation_id}")
-            
-            if await self._window_service._all_resources_occupied(window):
-                logger.info(f"All resources occupied for window: {window.id}")
-                asyncio.create_task(self._window_service.close_window(window.id, "all resources occupied"))
-            
-            return reservation
+                logger.error(f"Failed to forward reservation write to master: {reservation_id}")
+                raise ValueError("Failed to replicate reservation update to master node")
+        
+        if not window_is_local_master:
+            logger.info(f"Forwarding window write to remote master for {window.id}")
+            window_data = window.model_dump(mode='json')
+            window_success = await cluster_manager._send_write_to_master(
+                window.id, "window", "update", window_data
+            )
+            if not window_success:
+                logger.error(f"Failed to forward window write to master: {window.id}")
+                raise ValueError("Failed to replicate window update to master node")
+        
+        logger.info(f"Resource selected successfully with cross-master writes: {reservation_id}")
+        
+        if await self._window_service._all_resources_occupied(window):
+            logger.info(f"All resources occupied for window: {window.id}")
+            asyncio.create_task(self._window_service.close_window(window.id, "all resources occupied"))
+        
+        return reservation
     
     async def cancel_reservation(self, reservation_id: str) -> bool:
         logger.info(f"Cancelling reservation: {reservation_id}")

@@ -183,6 +183,61 @@ class ShardUpdateRequest(BaseModel):
     shard_state: Dict[str, Dict[str, List[int]]]
 
 
+@router.post("/forward-write")
+async def forward_write(request: PrepareRequest, storage: Storage = Depends(get_storage), cluster_manager: ClusterManager = Depends(get_cluster_manager)):
+    """
+    Handle a write request forwarded from another node for an entity whose master is this node.
+    This performs the full replication and commit cycle for the entity.
+    
+    This is used when a node needs to write to an entity whose master is a different node.
+    The node forwards the write to the master, and the master coordinates replication to its replicas.
+    """
+    try:
+        logger.info(f"Forwarded write received - Operation: {request.operation}, Entity: {request.entity_type}:{request.entity_id}")
+        
+        # Check if this node is the master for this entity
+        if not cluster_manager._is_master_for_entity(request.entity_id):
+            logger.error(f"This node is not master for {request.entity_type}:{request.entity_id}")
+            raise HTTPException(status_code=400, detail="This node is not the master for this entity")
+        
+        repository = storage.get_repository(request.entity_type)
+        if not repository:
+            logger.warning(f"Invalid entity type: {request.entity_type}")
+            raise HTTPException(status_code=400, detail="Invalid entity type")
+        
+        # Deserialize the data dict to the appropriate Pydantic model
+        model_class = ENTITY_MODEL_MAP.get(request.entity_type)
+        if model_class:
+            try:
+                deserialized_data = model_class(**request.data)
+            except Exception as e:
+                logger.error(f"Error deserializing data for {request.entity_type}: {e}", exc_info=True)
+                raise HTTPException(status_code=400, detail=f"Invalid data format: {str(e)}")
+        else:
+            deserialized_data = request.data
+        
+        # Perform the full replication for this entity using the normal replication flow
+        logger.debug(f"Starting replication for forwarded write: {request.entity_type}:{request.entity_id}")
+        success = await cluster_manager.replicate_write(
+            request.operation, 
+            request.entity_type, 
+            request.entity_id, 
+            request.data
+        )
+        
+        if not success:
+            logger.error(f"Replication failed for forwarded write: {request.entity_type}:{request.entity_id}")
+            raise HTTPException(status_code=500, detail="Failed to replicate forwarded write")
+        
+        logger.info(f"Forwarded write processed successfully: {request.entity_type}:{request.entity_id}")
+        return {"status": "success"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing forwarded write: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.post("/shard-update")
 async def shard_update(
     request: ShardUpdateRequest,

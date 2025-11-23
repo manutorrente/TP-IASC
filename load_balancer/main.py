@@ -252,7 +252,7 @@ async def create_reservation(user_id: str, request: CreateReservationRequest):
     try:
         # Route based on window_id since it's the primary entity being modified
         response = await forward_request_to_master(
-            request.window_id,
+            reservation_id,
             "POST",
             "/reservations",
             params={"user_id": user_id},
