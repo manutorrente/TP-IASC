@@ -250,8 +250,9 @@ async def create_reservation(user_id: str, request: CreateReservationRequest):
     reservation_id = str(uuid.uuid4())
     logger.info(f"Creating reservation {reservation_id} for user {user_id}, window {request.window_id}")
     try:
+        # Route based on window_id since it's the primary entity being modified
         response = await forward_request_to_master(
-            reservation_id,
+            request.window_id,
             "POST",
             "/reservations",
             params={"user_id": user_id},
@@ -289,14 +290,28 @@ async def get_user_reservations(user_id: str):
 async def select_resource(reservation_id: str, request: SelectResourceRequest):
     logger.info(f"Selecting resource {request.resource_type} for reservation {reservation_id}")
     try:
-        response = await forward_request_to_master(
+        # First, get the reservation to find its window_id
+        reservation_response = await forward_request_to_master(
             reservation_id,
+            "GET",
+            f"/reservations/{reservation_id}"
+        )
+        window_id = reservation_response.get("window_id")
+        if not window_id:
+            logger.error(f"Could not determine window_id for reservation {reservation_id}")
+            raise HTTPException(status_code=500, detail="Could not determine window_id for reservation")
+        
+        # Route based on window_id since the main operation is updating the window's resources
+        response = await forward_request_to_master(
+            window_id,
             "POST",
             f"/reservations/{reservation_id}/select-resource",
             json=request.model_dump()
         )
         logger.info(f"Successfully selected resource for reservation {reservation_id}")
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to select resource for reservation {reservation_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

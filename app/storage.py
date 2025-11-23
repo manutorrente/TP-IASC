@@ -5,7 +5,6 @@ from cluster.modification_history import modification_history
 from fastapi import HTTPException
 import asyncio
 import logging
-import httpx
 
 
 logger = logging.getLogger(__name__)
@@ -35,72 +34,8 @@ class BaseRepository:
             logger.debug(f"Starting replication: operation={operation}, entity_type={self._entity_type}, entity_id={entity_id}")
             
             if not cluster_manager._is_master_for_entity(entity_id):
-                logger.info(f"Not master node for {self._entity_type}:{entity_id}, finding master and forwarding request")
-                
-                # Try to find and forward to master
-                try:
-                    shard_id = cluster_manager._get_shard_for_entity(entity_id)
-                    logger.debug(f"Entity {self._entity_type}:{entity_id} belongs to shard {shard_id}")
-                except Exception as shard_e:
-                    logger.error(f"Failed to determine shard for entity {entity_id}: {type(shard_e).__name__}: {shard_e}", exc_info=True)
-                    return False
-                
-                master_node = None
-                
-                # Check if any cluster node is master of this shard
-                for node in cluster_manager.cluster_nodes:
-                    if node.is_master_of(shard_id):
-                        master_node = node
-                        logger.debug(f"Found master node for shard {shard_id}: {node.url}")
-                        break
-                
-                if not master_node:
-                    logger.error(f"Could not find master node for shard {shard_id} containing {self._entity_type}:{entity_id}. Available cluster nodes: {len(cluster_manager.cluster_nodes)}")
-                    if cluster_manager.cluster_nodes:
-                        logger.debug(f"Available nodes: {[(n.url, [(s.shard_id, s.role.value) for s in n.shards]) for n in cluster_manager.cluster_nodes]}")
-                    raise HTTPException(status_code=503, detail=f"Master node not found for {self._entity_type}:{entity_id}")
-                
-                logger.debug(f"Found master at {master_node.url}, forwarding write request")
-                
-                # Convert data to dict for forwarding
-                data_dict = data.model_dump(mode='json') if hasattr(data, 'model_dump') else data
-                
-                # Forward to master node via HTTP
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    try:
-                        logger.debug(f"Sending forward-write request to {master_node.url} for {self._entity_type}:{entity_id}")
-                        response = await client.post(
-                            f"{master_node.url}/cluster/forward-write",
-                            json={
-                                "operation": operation,
-                                "entity_type": self._entity_type,
-                                "entity_id": entity_id,
-                                "data": data_dict
-                            }
-                        )
-                        
-                        logger.debug(f"Received response from master: status={response.status_code}")
-                        
-                        if response.status_code == 200:
-                            logger.info(f"Write request forwarded successfully to {master_node.url} for {self._entity_type}:{entity_id}")
-                            return True
-                        else:
-                            logger.error(f"Master node at {master_node.url} returned error status: {response.status_code}")
-                            try:
-                                error_detail = response.json()
-                                logger.error(f"Master error response body: {error_detail}")
-                            except Exception as parse_e:
-                                logger.error(f"Master error response text: {response.text}")
-                            return False
-                    except httpx.TimeoutException as te:
-                        logger.error(f"Timeout forwarding write to master at {master_node.url}: {te}", exc_info=True)
-                        return False
-                    except httpx.ConnectError as ce:
-                        logger.error(f"Connection error forwarding write to master at {master_node.url}: {ce}", exc_info=True)
-                        return False
-                    except Exception as e:
-                        logger.error(f"Error forwarding write to master at {master_node.url}: {type(e).__name__}: {e}", exc_info=True)
-                        return False
+                logger.error(f"Not master node for {self._entity_type}:{entity_id} - rejecting write")
+                raise HTTPException(status_code=500, detail=f"This node is not the master for {self._entity_type}:{entity_id}")
             
             logger.debug(f"Node is master, converting data to dict")
             data_dict = data.model_dump(mode='json') if hasattr(data, 'model_dump') else data
