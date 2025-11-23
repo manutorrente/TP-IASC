@@ -167,6 +167,7 @@ def create_windows(operators):
                 )
                 if response.status_code == 200:
                     window = response.json()
+                    window["operator_id"] = operator["id"]  # Store operator_id for later use
                     created_windows.append(window)
                     log(f"✓ Created window: {window['satellite_name']} for {operator['name']}")
                 else:
@@ -288,33 +289,47 @@ def select_resources(reservations, windows):
         if WAIT_MODE:
             wait_for_input()
         
-        # Find the corresponding window
-        window = next((w for w in windows if w["id"] == reservation["window_id"]), None)
-        if not window or not window.get("resources"):
+        # Find the corresponding window using window_id from reservation
+        window_id = reservation_details.get("window_id")
+        window = next((w for w in windows if w["id"] == window_id), None)
+        
+        if not window:
+            log(f"✗ Window {window_id} not found in local windows list")
             continue
         
-        # Pick a random available resource
-        available_resources = [r for r in window["resources"] if r.get("available", True)]
-        if not available_resources:
+        # Resources are resource objects with 'type' field
+        resources = window.get("resources", [])
+        if not resources:
+            log(f"✗ No resources available for window {window_id}")
             continue
         
-        resource = random.choice(available_resources)
+        # Try each resource until one succeeds
+        resource_selected = False
+        for resource_obj in resources:
+            resource_type = resource_obj.get("type") if isinstance(resource_obj, dict) else resource_obj
+            
+            select_data = {
+                "resource_type": resource_type
+            }
+            
+            log(f"Attempting to select resource: {resource_type} for reservation {reservation['id']}")
+            
+            try:
+                response = requests.post(
+                    f"{BASE_URL}{API_PREFIX}/reservations/{reservation['id']}/select-resource",
+                    json=select_data
+                )
+                if response.status_code == 200:
+                    log(f"✓ Selected resource {resource_type} for reservation {reservation['id']}")
+                    resource_selected = True
+                    break
+                else:
+                    log(f"⚠ Resource {resource_type} failed ({response.status_code}), trying next...")
+            except Exception as e:
+                log(f"⚠ Error selecting {resource_type}: {e}, trying next...")
         
-        select_data = {
-            "resource_type": resource["type"]
-        }
-        
-        try:
-            response = requests.post(
-                f"{BASE_URL}{API_PREFIX}/reservations/{reservation['id']}/select-resource",
-                json=select_data
-            )
-            if response.status_code == 200:
-                log(f"✓ Selected resource {resource['type']} for reservation {reservation['id']}")
-            else:
-                log(f"✗ Failed to select resource: {response.status_code}")
-        except Exception as e:
-            log(f"✗ Error selecting resource: {e}")
+        if not resource_selected:
+            log(f"✗ Failed to select any resource for reservation {reservation['id']}")
         
         if not WAIT_MODE:
             time.sleep(0.1)

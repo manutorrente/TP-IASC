@@ -83,6 +83,9 @@ async def select_resource(
     except ValueError as e:
         logger.warning(f"Invalid resource selection: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error selecting resource for reservation {reservation_id}: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error selecting resource: {str(e)}")
 
 @router.post("/{reservation_id}/cancel", response_model=Reservation)
 async def cancel_reservation(

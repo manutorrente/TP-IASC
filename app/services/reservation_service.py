@@ -77,12 +77,16 @@ class ReservationService:
             
             target_resource = None
             for resource in window.resources:
+                logger.debug(f"Checking resource: {resource.type}, available: {resource.available}")
                 if resource.type == resource_type and resource.available:
                     target_resource = resource
                     break
             
             if not target_resource:
                 available_resources = [r for r in window.resources if r.available]
+                logger.warning(f"Target resource not available: {resource_type} for reservation: {reservation_id}")
+                logger.warning(f"  Available resources: {[r.type for r in available_resources]}")
+                logger.warning(f"  All resources: {[(r.type, r.available) for r in window.resources]}")
                 if not available_resources:
                     logger.warning(f"No resources available for reservation: {reservation_id}")
                     reservation.status = ReservationStatus.CANCELLED
@@ -93,21 +97,27 @@ class ReservationService:
                         "no resources available"
                     )
                     raise ValueError("No resources available. Your reservation has been cancelled.")
-                logger.warning(f"Selected resource not available: {resource_type}")
-                raise ValueError("Selected resource not available")
+                raise ValueError(f"Selected resource not available: {resource_type}")
             
             target_resource.available = False
             target_resource.reserved_by = reservation.user_id
             logger.debug(f"Resource reserved for user: {reservation.user_id}")
             
             reservation.selected_resource = resource_type
-            reservation.status = ReservationStatus.COMPLETED
             
             window_success = await self._storage.windows.update(window)
             reservation_success = await self._storage.reservations.update(reservation)
             
             if not window_success or not reservation_success:
                 logger.error(f"Failed to update window or reservation during resource selection: {reservation_id}")
+                return None
+            
+            # Only mark as COMPLETED after successful storage updates
+            reservation.status = ReservationStatus.COMPLETED
+            reservation_success = await self._storage.reservations.update(reservation)
+            
+            if not reservation_success:
+                logger.error(f"Failed to update reservation status to COMPLETED: {reservation_id}")
                 return None
             logger.info(f"Resource selected successfully: {reservation_id}")
             
