@@ -95,7 +95,7 @@ class Cluster:
                     replicas.append(instance)
         return replicas
 
-    async def assign_shards(self, replication_factor: int = 2) -> None:
+    async def assign_shards(self, replication_factor: int = 3) -> None:
         """
         Dynamically assigns or reassigns shards based on cluster state.
         """
@@ -352,12 +352,13 @@ class Cluster:
         else:
             logger.warning(f"Instance {host}:{port} not found in cluster. Cannot set as master.")
 
-    def add_instance(self, host: str, port: int) -> None:
+    def add_instance(self, host: str, port: int) -> bool:
+        """Add instance to cluster. Returns True if added, False if already exists."""
         # Check if instance already exists
         existing = self.get_instance(host, port)
         if existing:
-            logger.info(f"Instance {host}:{port} already exists in cluster")
-            return
+            logger.debug(f"Instance {host}:{port} already exists in cluster")
+            return False
 
         instance = AppInstance(host, port)
         logger.info(f"Adding instance {host}:{port} to cluster")
@@ -365,6 +366,7 @@ class Cluster:
         
         # Clear cache since instances changed
         self.get_instance.cache_clear()
+        return True
 
     def remove_instance(self, host: str, port: int) -> None:
         """Remove an instance from the cluster"""
@@ -383,9 +385,19 @@ class Cluster:
         return self.master
 
     async def add_instances(self, instances: list[App]) -> None:
+        """Add instances and only trigger shard reassignment if actual changes were made"""
+        instances_added = False
         for inst in instances:
-            self.add_instance(inst.host, inst.port)
-        await self.assign_shards()
+            # add_instance returns True if the instance was actually added (not duplicate)
+            if self.add_instance(inst.host, inst.port):
+                instances_added = True
+        
+        # Only reassign shards if we actually added new instances
+        if instances_added:
+            logger.info(f"New instances added, triggering shard reassignment")
+            await self.assign_shards()
+        else:
+            logger.debug(f"No new instances added, skipping shard reassignment")
 
     def get_instances_list(self) -> list[App]:
         return [App(host=instance.host, port=instance.port) for instance in self.instances]

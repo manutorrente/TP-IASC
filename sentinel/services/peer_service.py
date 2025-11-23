@@ -2,6 +2,8 @@ import httpx
 import logging
 import asyncio
 from typing import TYPE_CHECKING, Optional
+from models.api import PeerDiscoveryRequest, PeerDiscoveryResponse
+
 
 from models.api import App, FailoverNotification
 from utils import async_request, AppMixin, request_error_wrapper
@@ -252,3 +254,40 @@ class PeerService:
             logger.warning(f"Instance {instance.host}:{instance.port} marked as objectively down by quorum.")
             self.objectively_down_instances.add(instance)
             await self.objectively_down_action(instance)
+
+    async def _sync_instances_to_peer(self, peer: RemoteSentinelPeer, local_instances: list[App]) -> Optional[list[App]]:
+        """
+        Sync local cluster instances with a peer sentinel.
+        Returns any new instances the peer knows about that we don't.
+        """
+        try:
+            
+            url = f"{peer.url}/discover-peer"
+            payload = {
+                "host": self.self_peer.host,
+                "port": self.self_peer.port,
+                "local_instances": [inst.model_dump() for inst in local_instances]
+            }
+            
+            response = await async_request("POST", url, json=payload, timeout=5.0)
+            
+            if response and "local_instances" in response:
+                peer_instances = [App(**inst) for inst in response["local_instances"]]
+                logger.debug(f"Peer {peer.host}:{peer.port} has {len(peer_instances)} instances")
+                
+                # Filter for instances we don't have
+                our_instance_set = {(inst.host, inst.port) for inst in local_instances}
+                new_instances = [
+                    inst for inst in peer_instances 
+                    if (inst.host, inst.port) not in our_instance_set
+                ]
+                
+                if new_instances:
+                    logger.info(f"Peer {peer.host}:{peer.port} has {len(new_instances)} new instances we don't know about")
+                    return new_instances
+                return []
+            
+            return []
+        except Exception as e:
+            logger.debug(f"Failed to sync with peer {peer.host}:{peer.port}: {type(e).__name__}: {e}")
+            return None

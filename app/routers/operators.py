@@ -20,9 +20,15 @@ async def create_operator(operator_id: str, name: str, email: str, storage: Stor
         name=name,
         email=email
     )
-    success = await storage.operators.add(operator)
-    if not success:
-        logger.error(f"Failed to create operator: {operator_id}")
+    try:
+        success = await storage.operators.add(operator)
+        if not success:
+            logger.error(f"Failed to create operator: {operator_id} - storage.operators.add returned False")
+            raise HTTPException(status_code=500, detail="Failed to replicate write to cluster")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create operator {operator_id}: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to replicate write to cluster")
     return operator
 
@@ -45,7 +51,7 @@ async def create_window(
     storage: Storage = Depends(get_storage),
     window_service: WindowService = Depends(get_window_service)
 ):
-    logger.info(f"Creating window for operator: {operator_id} - Satellite: {request.satellite_name}")
+    logger.info(f"Creating window {request.window_id} for operator {operator_id}, satellite: {request.satellite_name}")
     operator = await storage.operators.get(operator_id)
     if not operator:
         logger.warning(f"Operator not found when creating window: {operator_id}")
@@ -67,10 +73,17 @@ async def create_window(
         closes_at=closes_at
     )
     
-    success = await window_service.create_window(window)
-    if not success:
-        logger.error(f"Failed to create window: {request.window_id}")
+    logger.debug(f"Created window object: id={window.id}, operator={operator_id}")
+    try:
+        success = await window_service.create_window(window)
+        if not success:
+            logger.error(f"Failed to create window {request.window_id} - window_service.create_window returned False")
+            raise HTTPException(status_code=500, detail="Failed to replicate write to cluster")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create window {request.window_id}: {type(e).__name__}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to replicate write to cluster")
-    logger.info(f"Window created successfully: {request.window_id}")
     
+    logger.info(f"Window created successfully: {request.window_id}")
     return window

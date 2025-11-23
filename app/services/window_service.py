@@ -78,13 +78,20 @@ class WindowService:
     
     async def create_window(self, window: Window) -> bool:
         logger.info(f"Creating window: {window.id}")
-        success = await self._storage.windows.add(window)
-        if not success:
-            logger.error(f"Failed to add window: {window.id}")
+        try:
+            success = await self._storage.windows.add(window)
+            if not success:
+                logger.error(f"Failed to add window {window.id} - storage.windows.add returned False")
+                return False
+            logger.debug(f"Window added to storage successfully: {window.id}")
+            
+            logger.debug(f"Sending notifications for new window: {window.id}")
+            await self._notification_service.notify_new_window(window)
+            logger.info(f"Window created and notifications sent: {window.id}")
+            return True
+        except Exception as e:
+            logger.error(f"Exception in create_window for {window.id}: {type(e).__name__}: {e}", exc_info=True)
             return False
-        await self._notification_service.notify_new_window(window)
-        logger.info(f"Window created and notifications sent: {window.id}")
-        return True
     
     async def get_available_resources(self, window_id: str):
         window = await self._storage.windows.get(window_id)

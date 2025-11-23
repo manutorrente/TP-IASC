@@ -38,17 +38,26 @@ class BaseRepository:
                 logger.info(f"Not master node for {self._entity_type}:{entity_id}, finding master and forwarding request")
                 
                 # Try to find and forward to master
-                shard_id = cluster_manager._get_shard_for_entity(entity_id)
+                try:
+                    shard_id = cluster_manager._get_shard_for_entity(entity_id)
+                    logger.debug(f"Entity {self._entity_type}:{entity_id} belongs to shard {shard_id}")
+                except Exception as shard_e:
+                    logger.error(f"Failed to determine shard for entity {entity_id}: {type(shard_e).__name__}: {shard_e}", exc_info=True)
+                    return False
+                
                 master_node = None
                 
                 # Check if any cluster node is master of this shard
                 for node in cluster_manager.cluster_nodes:
                     if node.is_master_of(shard_id):
                         master_node = node
+                        logger.debug(f"Found master node for shard {shard_id}: {node.url}")
                         break
                 
                 if not master_node:
-                    logger.error(f"Could not find master node for shard {shard_id} containing {self._entity_type}:{entity_id}")
+                    logger.error(f"Could not find master node for shard {shard_id} containing {self._entity_type}:{entity_id}. Available cluster nodes: {len(cluster_manager.cluster_nodes)}")
+                    if cluster_manager.cluster_nodes:
+                        logger.debug(f"Available nodes: {[(n.url, [(s.shard_id, s.role.value) for s in n.shards]) for n in cluster_manager.cluster_nodes]}")
                     raise HTTPException(status_code=503, detail=f"Master node not found for {self._entity_type}:{entity_id}")
                 
                 logger.debug(f"Found master at {master_node.url}, forwarding write request")
@@ -57,7 +66,7 @@ class BaseRepository:
                 data_dict = data.model_dump(mode='json') if hasattr(data, 'model_dump') else data
                 
                 # Forward to master node via HTTP
-                async with httpx.AsyncClient(timeout=5.0) as client:
+                async with httpx.AsyncClient(timeout=10.0) as client:
                     try:
                         logger.debug(f"Sending forward-write request to {master_node.url} for {self._entity_type}:{entity_id}")
                         response = await client.post(
@@ -103,7 +112,7 @@ class BaseRepository:
             )
             
             if not success:
-                logger.error(f"Replication failed for {operation} on {self._entity_type}:{entity_id}")
+                logger.error(f"Replication failed for {operation} on {self._entity_type}:{entity_id} - cluster_manager.replicate_write returned False")
                 return False
             
             logger.debug(f"Replication successful for {operation} on {self._entity_type}:{entity_id}")
@@ -115,7 +124,7 @@ class BaseRepository:
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Exception in _replicate_and_commit for {self._entity_type}:{entity_id}: {str(e)}", exc_info=True)
+            logger.error(f"Exception in _replicate_and_commit for {self._entity_type}:{entity_id}: {type(e).__name__}: {e}", exc_info=True)
             return False
     
     async def prepare_write(self, entity_id: str, data: Any):
@@ -194,9 +203,11 @@ class WindowRepository(BaseRepository):
         lock = await self._get_lock(window.id)
         async with lock:
             logger.info(f"Adding window: {window.id} - {window.satellite_name} by operator {window.operator_id}")
+            logger.debug(f"Calling _replicate_and_commit for window: {window.id}")
             if not await self._replicate_and_commit("add", window.id, window):
-                logger.error(f"Failed to add window: {window.id}")
+                logger.error(f"Failed to add window: {window.id} - _replicate_and_commit returned False")
                 return False
+            logger.debug(f"_replicate_and_commit succeeded, storing window locally")
             self._data[window.id] = window
             logger.info(f"Window added successfully: {window.id}")
             return True

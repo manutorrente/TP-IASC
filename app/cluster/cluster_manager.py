@@ -199,6 +199,13 @@ class ClusterManager:
             node for node in self.cluster_nodes 
             if not node.blocked and node.is_slave_of(shard_id)
         ]
+    
+    def _get_all_replica_nodes_for_shard(self, shard_id: int) -> List[ClusterNode]:
+        """Returns list of ALL replica nodes for a specific shard (including blocked)."""
+        return [
+            node for node in self.cluster_nodes 
+            if node.is_slave_of(shard_id)
+        ]
 
     async def replicate_write(self, operation: str, entity_type: str, entity_id: str, data: dict) -> bool:
         """Replicate write operation to replica nodes of the same shard."""
@@ -221,9 +228,20 @@ class ClusterManager:
         available_nodes = self._get_available_nodes_for_shard(shard_id)
         required_acks = settings.write_quorum - 1
         
+        # Log cluster state for debugging
+        logger.debug(f"Cluster state - Total nodes known: {len(self.cluster_nodes)}, Total shards: {self.n_shards}")
+        for node in self.cluster_nodes:
+            shard_info = [(s.shard_id, s.role.value) for s in node.shards]
+            logger.debug(f"  Node {node.url}: blocked={node.blocked}, shards={shard_info}")
+        
         # Check if we have enough available nodes to meet quorum
         if len(available_nodes) < required_acks:
-            logger.error(f"Insufficient available nodes - Available: {len(available_nodes)}, Required: {required_acks}")
+            all_replicas = self._get_all_replica_nodes_for_shard(shard_id)
+            logger.error(f"Insufficient available nodes for shard {shard_id}")
+            logger.error(f"  Available replicas (unblocked): {len(available_nodes)}, Required: {required_acks}")
+            logger.error(f"  Total replicas (including blocked): {len(all_replicas)}")
+            logger.error(f"  Total cluster nodes: {len(self.cluster_nodes)}")
+            logger.error(f"  Replica node details: {[(n.url, f'blocked={n.blocked}') for n in all_replicas]}")
             raise Exception(f"Insufficient available nodes to meet write quorum. Available: {len(available_nodes)}, Required: {required_acks}")
         
         logger.debug(f"Sending prepare to {required_acks} nodes from {len(available_nodes)} available")

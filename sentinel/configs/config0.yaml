@@ -13,3 +13,6 @@ sentinel_peers:
 app_instances:
   - host: "localhost"
     port: 9001
+
+  - host: "localhost"
+    port: 9003
