@@ -21,6 +21,7 @@ class ShardRole(Enum):
 class Shard:
     shard_id: int
     role: ShardRole
+    last_update: Optional[datetime] = None
 
     def __hash__(self):
         return hash(self.shard_id)
@@ -275,7 +276,7 @@ class ClusterManager:
         
         logger.info(f"Prepare phase successful, committing to {len(successful_nodes)} nodes")
         for node in successful_nodes:
-            asyncio.create_task(self._send_commit(node, entity_type, entity_id))
+            asyncio.create_task(self._send_commit(node, entity_type, entity_id, shard_id))
         
         total_duration = time.time() - start_time
         logger.info(f"[REPLICATION END] {entity_type}:{entity_id} - total_duration={total_duration:.3f}s")
@@ -321,21 +322,27 @@ class ClusterManager:
             logger.warning(f"Node {node.url} blocked due to exception")
             return False
 
-    async def _send_commit(self, node: ClusterNode, entity_type: str, entity_id: str):
+    async def _send_commit(self, node: ClusterNode, entity_type: str, entity_id: str, shard_id: int):
         try:
-            logger.debug(f"Sending commit to {node.url} for {entity_type}:{entity_id}")
+            logger.debug(f"Sending commit to {node.url} for {entity_type}:{entity_id}, shard {shard_id}")
             response = await self._client.post(
                 f"{node.url}/cluster/commit",
                 json={
                     "entity_type": entity_type,
-                    "entity_id": entity_id
+                    "entity_id": entity_id,
+                    "shard_id": shard_id
                 }
             )
             
             if response.status_code == 200:
                 async with self._lock:
                     node.last_update = datetime.utcnow()
-                logger.debug(f"Commit sent to {node.url}, updated timestamp")
+                    # Update the last_update timestamp for the specific slave shard
+                    for shard in node.shards:
+                        if shard.shard_id == shard_id and shard.role == ShardRole.REPLICA:
+                            shard.last_update = datetime.utcnow()
+                            logger.debug(f"Updated last_update for slave shard {shard_id} on {node.url}")
+                logger.debug(f"Commit sent to {node.url}, updated node and shard timestamps")
             else:
                 async with self._lock:
                     node.blocked = True

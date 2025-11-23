@@ -94,6 +94,38 @@ class Cluster:
                 if shard.shard_id == shard_id and shard.role == ShardRole.REPLICA:
                     replicas.append(instance)
         return replicas
+    
+    async def _get_replica_with_most_recent_update(self, shard_id: int) -> Optional['AppInstance']:
+        """Get the replica instance with the most recent update for a given shard"""
+        replicas = self._get_slaves_for_shard(shard_id)
+        if not replicas:
+            logger.warning(f"No replicas found for shard {shard_id}")
+            return None
+        
+        # Query each replica for its last_update timestamp
+        most_recent_instance = None
+        most_recent_timestamp = None
+        
+        for instance in replicas:
+            found, last_update_str = await instance.get_shard_last_update(shard_id)
+            
+            if found and last_update_str:
+                # Parse ISO8601 timestamp
+                from datetime import datetime
+                last_update = datetime.fromisoformat(last_update_str)
+                
+                if most_recent_timestamp is None or last_update > most_recent_timestamp:
+                    most_recent_timestamp = last_update
+                    most_recent_instance = instance
+                    logger.debug(f"Instance {instance.host}:{instance.port} has most recent update for shard {shard_id}: {last_update}")
+        
+        if most_recent_instance:
+            logger.info(f"Selected {most_recent_instance.host}:{most_recent_instance.port} as it has the most recent update for shard {shard_id}")
+        else:
+            logger.warning(f"Could not determine most recent replica for shard {shard_id}, selecting first available")
+            most_recent_instance = replicas[0] if replicas else None
+        
+        return most_recent_instance
 
     async def assign_shards(self, replication_factor: int = 3) -> None:
         """
@@ -117,7 +149,7 @@ class Cluster:
             return
 
         # Check if we need to handle node changes
-        self._handle_node_changes(replication_factor)
+        await self._handle_node_changes(replication_factor)
         await self._notify_shard_changes()
         self._log_final_state()
 
@@ -148,7 +180,7 @@ class Cluster:
         # Assign replicas
         self._reassign_all_replicas(replication_factor)
 
-    def _handle_node_changes(self, replication_factor: int) -> None:
+    async def _handle_node_changes(self, replication_factor: int) -> None:
         """Handle nodes being added, removed, or coming back online"""
         alive_instances = self._get_alive_instances()
         num_alive = len(alive_instances)
@@ -176,7 +208,7 @@ class Cluster:
         if dead_master_shards:
             logger.info(f"Found {len(dead_master_shards)} master shards from dead instances")
             for shard_id in dead_master_shards:
-                self._reassign_master_to_instance_with_least(shard_id, replication_factor)
+                await self._reassign_master_to_instance_with_least(shard_id, replication_factor)
 
         # Handle instances without masters
         for instance in instances_without_master:
@@ -186,7 +218,7 @@ class Cluster:
                     f"Node {instance.host}:{instance.port} added/returned. "
                     f"Shards ({self.total_shards}) >= nodes ({num_alive}), rebalancing..."
                 )
-                self._rebalance_shard_to_instance(instance, replication_factor)
+                await self._rebalance_shard_to_instance(instance, replication_factor)
             else:
                 # Not enough shards, create a new one
                 logger.info(
@@ -198,13 +230,15 @@ class Cluster:
         # Final replica reassignment
         self._reassign_all_replicas(replication_factor)
 
-    def _reassign_master_to_instance_with_least(
+    async def _reassign_master_to_instance_with_least(
         self, shard_id: int, replication_factor: int
     ) -> None:
-        """Reassign a master shard to the instance with the least masters"""
-        target_instance = self._get_instance_with_least_masters()
+        """Reassign a master shard to the replica with the most recent update"""
+        # Find the replica with the most recent update
+        target_instance = await self._get_replica_with_most_recent_update(shard_id)
+        
         if not target_instance:
-            logger.error(f"No alive instance available to reassign shard {shard_id}")
+            logger.error(f"No available replica for shard {shard_id} to promote as master")
             return
 
         # Remove this shard from all instances first
@@ -217,16 +251,25 @@ class Cluster:
         
         logger.info(
             f"Reassigned master shard {shard_id} to {target_instance.host}:{target_instance.port} "
-            f"(least masters)"
+            f"(most recent update)"
         )
 
-    def _rebalance_shard_to_instance(
+    async def _rebalance_shard_to_instance(
         self, target_instance: 'AppInstance', replication_factor: int
     ) -> None:
         """Take a master shard from instance with most masters and give it to target"""
         source_instance = self._get_instance_with_most_masters()
         if not source_instance:
             logger.error("No instance with master shards found for rebalancing")
+            return
+
+        # Check if target node is blocked before proceeding
+        is_blocked = await target_instance.is_blocked(source_instance)
+        if is_blocked:
+            logger.warning(
+                f"Cannot rebalance to {target_instance.host}:{target_instance.port} - "
+                f"node is blocked by master {source_instance.host}:{source_instance.port}"
+            )
             return
 
         # Count masters on source
@@ -473,6 +516,54 @@ class AppInstance(AppMixin):
             logger.info(f"Notified instance {self.host}:{self.port} of shard changes")
         except httpx.HTTPError as e:
             logger.error(f"Failed to notify instance {self.host}:{self.port} of shard changes: {e}")
+    
+    async def get_shard_last_update(self, shard_id: int) -> tuple[bool, Optional[str]]:
+        """
+        Query this instance for the last update timestamp of a specific shard.
+        
+        Returns:
+            Tuple of (found: bool, last_update_timestamp: Optional[str])
+            - found: True if the shard exists on this instance
+            - last_update_timestamp: ISO8601 datetime string or None if never updated
+        """
+        try:
+            url = f"{self.url}/cluster/shard/{shard_id}/last-update"
+            response = await async_request("GET", url)
+            
+            if response.get("found"):
+                return (True, response.get("last_update"))
+            else:
+                logger.debug(f"Shard {shard_id} not found on {self.host}:{self.port}")
+                return (False, None)
+        except Exception as e:
+            logger.error(f"Error querying shard {shard_id} last update on {self.host}:{self.port}: {e}")
+            return (False, None)
+    
+    async def is_blocked(self, source_instance: 'AppInstance') -> bool:
+        """
+        Check if this instance is blocked by querying the source master's cluster status.
+        
+        Returns:
+            True if this node is blocked, False otherwise
+        """
+        try:
+            url = f"{source_instance.url}/cluster/status"
+            response = await async_request("GET", url)
+            
+            cluster_nodes = response.get("cluster_nodes", [])
+            for node in cluster_nodes:
+                if node.get("url") == self.url:
+                    is_blocked = node.get("blocked", False)
+                    if is_blocked:
+                        logger.warning(f"Node {self.host}:{self.port} is blocked according to {source_instance.host}:{source_instance.port}")
+                    return is_blocked
+            
+            # If node not found in cluster status, assume not blocked
+            logger.debug(f"Node {self.host}:{self.port} not found in cluster status of {source_instance.host}:{source_instance.port}, assuming not blocked")
+            return False
+        except Exception as e:
+            logger.error(f"Error checking if node {self.host}:{self.port} is blocked: {e}")
+            return False
 
     @check_down_after
     async def add_remote_down(self, peer_service: "PeerService"):

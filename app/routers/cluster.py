@@ -31,6 +31,7 @@ class PrepareRequest(BaseModel):
 class CommitRequest(BaseModel):
     entity_type: str
     entity_id: str
+    shard_id: int
 
 class AbortRequest(BaseModel):
     entity_type: str
@@ -74,15 +75,24 @@ async def prepare_write(request: PrepareRequest, storage: Storage = Depends(get_
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/commit")
-async def commit_write(request: CommitRequest, storage: Storage = Depends(get_storage)):
+async def commit_write(request: CommitRequest, storage: Storage = Depends(get_storage), cluster_manager = Depends(get_cluster_manager)):
     try:
-        logger.info(f"Committing write - Entity: {request.entity_type}:{request.entity_id}")
+        logger.info(f"Committing write - Entity: {request.entity_type}:{request.entity_id}, Shard: {request.shard_id}")
         repository = storage.get_repository(request.entity_type)
         if not repository:
             logger.warning(f"Invalid entity type: {request.entity_type}")
             raise HTTPException(status_code=400, detail="Invalid entity type")
         
         await repository.commit_write(request.entity_id)
+        
+        # Update the last_update timestamp for the slave shard that received this update
+        for shard in cluster_manager.shards:
+            if shard.shard_id == request.shard_id and shard.role.value == "replica":
+                from datetime import datetime
+                shard.last_update = datetime.utcnow()
+                logger.info(f"Updated last_update timestamp for slave shard {request.shard_id}")
+                break
+        
         logger.info(f"Write committed successfully for {request.entity_type}:{request.entity_id}")
         return {"status": "committed"}
     except Exception as e:
@@ -191,4 +201,50 @@ async def shard_update(
 
     except Exception as e:
         logger.error(f"Error handling shard update: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/shard/{shard_id}/last-update")
+async def get_shard_last_update(
+    shard_id: int,
+    cluster_manager: ClusterManager = Depends(get_cluster_manager)
+):
+    """
+    Get the last update timestamp for a specific shard on this node.
+    
+    Args:
+        shard_id: The shard ID to query
+    
+    Returns:
+        {
+            "shard_id": int,
+            "last_update": ISO8601 datetime string or null,
+            "role": "master" or "replica",
+            "found": bool
+        }
+    """
+    try:
+        logger.debug(f"Querying last update for shard {shard_id}")
+        
+        # Search for the shard in this node's shards
+        for shard in cluster_manager.shards:
+            if shard.shard_id == shard_id:
+                logger.info(f"Found shard {shard_id} with role {shard.role.value}, last_update: {shard.last_update}")
+                return {
+                    "shard_id": shard.shard_id,
+                    "last_update": shard.last_update.isoformat() if shard.last_update else None,
+                    "role": shard.role.value,
+                    "found": True
+                }
+        
+        logger.warning(f"Shard {shard_id} not found on this node")
+        return {
+            "shard_id": shard_id,
+            "last_update": None,
+            "role": None,
+            "found": False
+        }
+    
+    except Exception as e:
+        logger.error(f"Error querying shard last update: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
