@@ -4,6 +4,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def async_request(method: str, url: str, **kwargs):
+    # Set default timeout if not provided (5 seconds for peer communications)
+    if "timeout" not in kwargs:
+        kwargs["timeout"] = 5.0
+    
     async with httpx.AsyncClient() as client:
         response = await client.request(method, url, **kwargs)
         response.raise_for_status()

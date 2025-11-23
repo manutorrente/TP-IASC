@@ -44,6 +44,7 @@ class RemoteSentinelPeer(AppMixin):
         status = response.get("status", "unknown")
         return status == "ok"
 
+    @request_error_wrapper
     async def coordinator_update(self, coordinator: "RemoteSentinelPeer", origin: "RemoteSentinelPeer") -> None:
         url = f"{self.url}/coordinator-update"
         payload = {
@@ -51,6 +52,7 @@ class RemoteSentinelPeer(AppMixin):
             "origin": {"address": {"host": origin.host, "port": origin.port}}
         }
         await async_request("POST", url, json=payload)
+        logger.info(f"Notified peer {self.url} of coordinator update")
 
     @request_error_wrapper
     async def notify_coordinator(self, coordinator: "RemoteSentinelPeer") -> None:
@@ -136,6 +138,8 @@ class PeerService:
             if isinstance(result, Exception):
                 logger.error(f"Failed to notify coordinator update to peer {peer.url}: {result}. Peer is offline")
                 failed_peers.add(peer)
+            else:
+                logger.debug(f"Successfully notified peer {peer.url} of coordinator update")
 
         for peer in self.offline_peers - failed_peers:
             logger.info(f"Peer {peer.url} is back online.")

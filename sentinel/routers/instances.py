@@ -1,5 +1,6 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+import asyncio
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from models.api import App
 from models.domain import Cluster
 from services.peer_service import PeerService
@@ -12,6 +13,7 @@ logger = logging.getLogger(__name__)
 @router.post("/instance-down", status_code=status.HTTP_200_OK)
 async def instance_down_notification(
     payload: App,
+    background_tasks: BackgroundTasks,
     cluster: Cluster = Depends(get_cluster),
     peer_service: PeerService = Depends(get_peer_service)
 ):
@@ -23,9 +25,10 @@ async def instance_down_notification(
 
     instance = cluster.get_instance(host, port)
     if instance:
-        await instance.add_remote_down(peer_service)
-        logger.info(f"Received notification: {host}:{port} is down (count: {instance.down_count()})")
-        return {"message": "Instance marked as down"}
+        # Run the failover process in background to return immediately
+        background_tasks.add_task(instance.add_remote_down, peer_service)
+        logger.info(f"Received notification: {host}:{port} is down, processing in background")
+        return {"message": "Instance down notification acknowledged"}
 
     raise HTTPException(status_code=404, detail="Instance not found")
 
@@ -33,6 +36,7 @@ async def instance_down_notification(
 @router.post("/instance-up", status_code=status.HTTP_200_OK)
 async def instance_up_notification(
     payload: App,
+    background_tasks: BackgroundTasks,
     cluster: Cluster = Depends(get_cluster),
     peer_service: PeerService = Depends(get_peer_service)
 ):
@@ -44,8 +48,9 @@ async def instance_up_notification(
 
     instance = cluster.get_instance(host, port)
     if instance:
-        await instance.add_remote_up(peer_service)
-        logger.info(f"Received notification: {host}:{port} is up (count: {instance.down_count()})")
-        return {"message": "Instance marked as up"}
+        # Run the update in background to return immediately
+        background_tasks.add_task(instance.add_remote_up, peer_service)
+        logger.info(f"Received notification: {host}:{port} is up, processing in background")
+        return {"message": "Instance up notification acknowledged"}
 
     raise HTTPException(status_code=404, detail="Instance not found")

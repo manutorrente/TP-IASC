@@ -98,15 +98,18 @@ class Cluster:
     async def _get_replica_with_most_recent_update(self, shard_id: int) -> Optional['AppInstance']:
         """Get the replica instance with the most recent update for a given shard"""
         replicas = self._get_slaves_for_shard(shard_id)
-        if not replicas:
-            logger.warning(f"No replicas found for shard {shard_id}")
+        # Filter to only include alive instances
+        alive_replicas = [r for r in replicas if r.is_objectively_up]
+        
+        if not alive_replicas:
+            logger.warning(f"No alive replicas found for shard {shard_id}")
             return None
         
-        # Query each replica for its last_update timestamp
+        # Query each alive replica for its last_update timestamp
         most_recent_instance = None
         most_recent_timestamp = None
         
-        for instance in replicas:
+        for instance in alive_replicas:
             found, last_update_str = await instance.get_shard_last_update(shard_id)
             
             if found and last_update_str:
@@ -122,8 +125,8 @@ class Cluster:
         if most_recent_instance:
             logger.info(f"Selected {most_recent_instance.host}:{most_recent_instance.port} as it has the most recent update for shard {shard_id}")
         else:
-            logger.warning(f"Could not determine most recent replica for shard {shard_id}, selecting first available")
-            most_recent_instance = replicas[0] if replicas else None
+            logger.warning(f"Could not determine most recent replica for shard {shard_id}, selecting first available alive replica")
+            most_recent_instance = alive_replicas[0] if alive_replicas else None
         
         return most_recent_instance
 
