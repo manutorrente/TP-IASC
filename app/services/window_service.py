@@ -23,7 +23,7 @@ class WindowService:
         logger.info("Starting window monitoring loop")
         while True:
             try:
-                await asyncio.sleep(1)
+                await asyncio.sleep(10)
                 await self._check_expired_windows()
             except asyncio.CancelledError:
                 logger.info("Window monitoring loop cancelled")

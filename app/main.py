@@ -14,15 +14,22 @@ import asyncio
 import sys
 import uvicorn
 import logging
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+from pathlib import Path
 
 port = sys.argv[1] if len(sys.argv) > 1 else settings.node_port
 settings.node_port = int(port)
+
+# Configure logging with file handler and port prefix
+log_file = Path(__file__).parent / "app.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format=f'[PORT {settings.node_port}] %(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 logger.info(f"Configured node port: {settings.node_port}")
 
 @asynccontextmanager

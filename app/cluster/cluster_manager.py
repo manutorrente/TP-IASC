@@ -9,6 +9,7 @@ from enum import Enum
 from dataclasses import dataclass
 import jump
 import uuid
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class ClusterManager:
         self.n_shards: int = 0
         self.cluster_nodes: List[ClusterNode] = []
         self._lock = asyncio.Lock()
-        self._client = httpx.AsyncClient(timeout=5.0)
+        self._client = httpx.AsyncClient(timeout=15.0)
         self.get_self_url()
         logger.info(f"ClusterManager initialized with self_url: {self.self_url}")
         
@@ -209,6 +210,8 @@ class ClusterManager:
 
     async def replicate_write(self, operation: str, entity_type: str, entity_id: str, data: dict) -> bool:
         """Replicate write operation to replica nodes of the same shard."""
+        start_time = time.time()
+        logger.info(f"[REPLICATION START] {entity_type}:{entity_id} - operation={operation}")
         
         # Determine which shard this entity belongs to
         try:
@@ -228,11 +231,7 @@ class ClusterManager:
         available_nodes = self._get_available_nodes_for_shard(shard_id)
         required_acks = settings.write_quorum - 1
         
-        # Log cluster state for debugging
-        logger.debug(f"Cluster state - Total nodes known: {len(self.cluster_nodes)}, Total shards: {self.n_shards}")
-        for node in self.cluster_nodes:
-            shard_info = [(s.shard_id, s.role.value) for s in node.shards]
-            logger.debug(f"  Node {node.url}: blocked={node.blocked}, shards={shard_info}")
+        logger.debug(f"Found {len(available_nodes)} available replica nodes for shard {shard_id}, need {required_acks} acks")
         
         # Check if we have enough available nodes to meet quorum
         if len(available_nodes) < required_acks:
@@ -244,14 +243,25 @@ class ClusterManager:
             logger.error(f"  Replica node details: {[(n.url, f'blocked={n.blocked}') for n in all_replicas]}")
             raise Exception(f"Insufficient available nodes to meet write quorum. Available: {len(available_nodes)}, Required: {required_acks}")
         
-        logger.debug(f"Sending prepare to {required_acks} nodes from {len(available_nodes)} available")
+        logger.debug(f"Sending prepare to {len(available_nodes)} nodes for {entity_type}:{entity_id}")
+        prepare_start = time.time()
         
         tasks = []
         target_nodes = available_nodes
         for node in target_nodes:
             tasks.append(self._send_prepare(node, operation, entity_type, entity_id, data))
         
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+               timeout=10.0
+            )
+            prepare_duration = time.time() - prepare_start
+            logger.info(f"[PREPARE COMPLETE] {entity_type}:{entity_id} - duration={prepare_duration:.3f}s")
+        except asyncio.TimeoutError:
+            prepare_duration = time.time() - prepare_start
+            logger.error(f"[PREPARE TIMEOUT] {entity_type}:{entity_id} - duration={prepare_duration:.3f}s (timeout=10.0s)")
+            return False
         
         successful_nodes = [node for node, result in zip(target_nodes, results) 
                           if not isinstance(result, Exception) and result]
@@ -266,11 +276,15 @@ class ClusterManager:
         for node in successful_nodes:
             asyncio.create_task(self._send_commit(node, entity_type, entity_id))
         
+        total_duration = time.time() - start_time
+        logger.info(f"[REPLICATION END] {entity_type}:{entity_id} - total_duration={total_duration:.3f}s")
         return True
 
     async def _send_prepare(self, node: ClusterNode, operation: str, entity_type: str, entity_id: str, data: dict) -> bool:
         try:
-            logger.debug(f"Sending prepare to {node.url} for {entity_type}:{entity_id}")
+            send_start = time.time()
+            logger.debug(f"[PREPARE SEND START] {node.url} - {entity_type}:{entity_id}")
+            
             response = await self._client.post(
                 f"{node.url}/cluster/prepare",
                 json={
@@ -280,18 +294,27 @@ class ClusterManager:
                     "data": data
                 }
             )
+            send_duration = time.time() - send_start
             success = response.status_code == 200
             
             if not success:
                 async with self._lock:
                     node.blocked = True
-                logger.warning(f"Prepare failed for {node.url}: {response.status_code}, node blocked")
+                logger.warning(f"[PREPARE FAILED] {node.url} - {entity_type}:{entity_id} - status={response.status_code}, duration={send_duration:.3f}s, node blocked")
             else:
-                logger.debug(f"Prepare response from {node.url}: {response.status_code}")
+                logger.debug(f"[PREPARE SUCCESS] {node.url} - {entity_type}:{entity_id} - status={response.status_code}, duration={send_duration:.3f}s")
             
             return success
+        except asyncio.TimeoutError as e:
+            send_duration = time.time() - send_start
+            logger.warning(f"[PREPARE TIMEOUT] {node.url} - {entity_type}:{entity_id} - duration={send_duration:.3f}s - {type(e).__name__}")
+            async with self._lock:
+                node.blocked = True
+            logger.warning(f"Node {node.url} blocked due to timeout")
+            return False
         except Exception as e:
-            logger.warning(f"Error sending prepare to {node.url}: {e}")
+            send_duration = time.time() - send_start
+            logger.warning(f"[PREPARE ERROR] {node.url} - {entity_type}:{entity_id} - duration={send_duration:.3f}s - {type(e).__name__}: {e}")
             async with self._lock:
                 node.blocked = True
             logger.warning(f"Node {node.url} blocked due to exception")
