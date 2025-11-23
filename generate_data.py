@@ -17,7 +17,11 @@ def log(message):
 def wait_for_input():
     """Wait for user input if in wait mode"""
     if WAIT_MODE:
-        input("Press Enter to continue to the next request...")
+        try:
+            input("Press Enter to continue to the next request...")
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting...")
+            sys.exit(0)
 
 
 def create_users():
@@ -266,6 +270,24 @@ def select_resources(reservations, windows):
     
     # Select resources for half of the reservations
     for i, reservation in enumerate(reservations[:len(reservations)//2]):
+        # Get reservation details
+        try:
+            response = requests.get(
+                f"{BASE_URL}{API_PREFIX}/reservations/{reservation['id']}"
+            )
+            if response.status_code == 200:
+                reservation_details = response.json()
+                log(f"Reservation details: {json.dumps(reservation_details, indent=2)}")
+            else:
+                log(f"✗ Failed to get reservation details: {response.status_code}")
+                continue
+        except Exception as e:
+            log(f"✗ Error getting reservation details: {e}")
+            continue
+        
+        if WAIT_MODE:
+            wait_for_input()
+        
         # Find the corresponding window
         window = next((w for w in windows if w["id"] == reservation["window_id"]), None)
         if not window or not window.get("resources"):
@@ -296,7 +318,8 @@ def select_resources(reservations, windows):
         
         if not WAIT_MODE:
             time.sleep(0.1)
-        wait_for_input()
+        else:
+            wait_for_input()
 
 def cancel_some_reservations(reservations):
     """Cancel some reservations"""
@@ -319,7 +342,8 @@ def cancel_some_reservations(reservations):
         
         if not WAIT_MODE:
             time.sleep(0.1)
-        wait_for_input()
+        else:
+            wait_for_input()
 
 def main():
     """Main function to populate the API"""

@@ -116,7 +116,7 @@ async def create_alert(user_id: str, request: CreateAlertRequest):
     logger.info(f"Creating alert {alert_id} for user {user_id}")
     try:
         response = await forward_request_to_master(
-            user_id,
+            alert_id,
             "POST",
             f"/users/{user_id}/alerts",
             json={"alert_id": alert_id, "criteria": request.criteria.model_dump(mode='json')}
@@ -184,7 +184,7 @@ async def create_window(operator_id: str, request: CreateWindowRequest):
     logger.info(f"Creating window {window_id} for operator {operator_id}, satellite: {request.satellite_name}")
     try:
         response = await forward_request_to_master(
-            operator_id,
+            window_id,
             "POST",
             f"/operators/{operator_id}/windows",
             json={"window_id": window_id, **request.model_dump(mode='json')}
@@ -251,7 +251,7 @@ async def create_reservation(user_id: str, request: CreateReservationRequest):
     logger.info(f"Creating reservation {reservation_id} for user {user_id}, window {request.window_id}")
     try:
         response = await forward_request_to_master(
-            user_id,
+            reservation_id,
             "POST",
             "/reservations",
             params={"user_id": user_id},
