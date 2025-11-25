@@ -247,7 +247,7 @@ async def get_available_resources(window_id: str):
 # Reservation endpoints
 @app.post("/reservations")
 async def create_reservation(user_id: str, request: CreateReservationRequest):
-    reservation_id = str(uuid.uuid4())
+    reservation_id = create_uuid_for_shard(request.window_id)
     logger.info(f"Creating reservation {reservation_id} for user {user_id}, window {request.window_id}")
     try:
         # Route based on window_id since it's the primary entity being modified

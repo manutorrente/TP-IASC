@@ -2,8 +2,14 @@ from conf import sentinels
 import httpx
 import jump
 import logging
+import uuid
+
 
 logger = logging.getLogger(__name__)
+
+
+        
+    
 
 async def async_request(method: str, url: str, **kwargs) -> dict:
     logger.debug(f"Making {method} request to {url}")
@@ -77,11 +83,22 @@ async def get_slaves_for_shard(shard_id: int) -> list[str]:
 def uuid_to_int(uuid_str: str) -> int:
     """Convert UUID string to integer for jump hash."""
     hex_str = uuid_str.replace('-', '')
-    return int(hex_str, 16)    
+    return int(hex_str, 16)
+
 
 master_cache: dict[int, str] = {}
 slave_cache: dict[int, list[str]] = {}
 num_shards: int = 0
+
+def create_uuid_for_shard(other_id: str) -> str:
+    global num_shards
+    shard_id = jump.hash(uuid_to_int(other_id), num_shards)
+    while True:
+        new_uuid = str(uuid.uuid4())
+        shard_assignment = jump.hash(uuid_to_int(new_uuid), num_shards)
+        if shard_assignment == shard_id:
+            return new_uuid    
+
 
 async def forward_request_to_master(entity_id: str, method: str, endpoint: str, **kwargs) -> dict:
     global num_shards
